@@ -165,14 +165,9 @@ async def my_order(callback: types.CallbackQuery, state: FSMContext):
 async def check_order_number(message: types.Message, state: FSMContext):
     text = message.text.strip()
     if not text.isdigit() or len(text) != 7:
-        await message.answer("❌ Номер заказа должен состоять из **ровно 7 цифр** без пробелов.")
+        await message.answer("❌ Неверный ввод. Номер заказа должен состоять из **ровно 7 цифр**. Повторите запрос.")
         return
-    order_id = text
-    if order_id in orders:
-        order = orders[order_id]
-        await message.answer(f"✅ Заказ №{order_id} найден!\nТовар: {order['product']}\nСтатус: Оплачен")
-    else:
-        await message.answer("❌ Заказ не найден или оплата ещё не поступила.")
+    await message.answer("❌ Заказ не найден или оплата ещё не поступила.")
     await state.clear()
 
 @dp.callback_query(lambda c: c.data == "start_city")
