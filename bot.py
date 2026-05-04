@@ -22,7 +22,15 @@ print("RAW:", repr(token))
 print("LEN:", len(token) if token else None)
 print("HAS_COLON:", ":" in token if token else None)
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+import os
+import requests
+
+token = os.getenv("BOT_TOKEN")
+
+url = f"https://api.telegram.org/bot{token}/getMe"
+print(requests.get(url).text)
+
+# bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
 # ===== STATES =====
