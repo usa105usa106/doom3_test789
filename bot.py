@@ -17,7 +17,6 @@ logging.basicConfig(level=logging.INFO)
 # =====================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not set")
 
@@ -32,7 +31,6 @@ class S(StatesGroup):
     city = State()
     product = State()
     district = State()
-    pay = State()
 
 # =====================
 # PRODUCTS
@@ -47,7 +45,7 @@ PRODUCTS = {
 }
 
 # =====================
-# CITIES
+# CITIES (полный список)
 # =====================
 
 ALL_CITIES = [
@@ -74,7 +72,7 @@ ALL_CITIES = [
 ]
 
 # =====================
-# DISTRICTS (50+ городов)
+# DISTRICTS
 # =====================
 
 LOCATIONS = {
@@ -131,12 +129,22 @@ LOCATIONS = {
 }
 
 # =====================
-# WALLETS
+# WALLETS + КУРСЫ
 # =====================
 
-BTC = "bc1qexample"
-USDT = "TXexample"
-TON = "UQexample"
+BTC_WALLET = "bc1qexample"
+USDT_WALLET = "TXexample"
+TON_WALLET = "UQexample"
+
+BTC_RATE = 6500000
+USDT_RATE = 90
+TON_RATE = 320
+
+def get_crypto_amounts(rub: int):
+    btc = round(rub / BTC_RATE, 6)
+    usdt = round(rub / USDT_RATE, 2)
+    ton = round(rub / TON_RATE, 3)
+    return btc, usdt, ton
 
 # =====================
 # KEYBOARDS
@@ -147,111 +155,131 @@ def kb_main():
         [InlineKeyboardButton(text="🏙 Выбрать город", callback_data="city")]
     ])
 
+def kb_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏙 Выбрать город", callback_data="city")]
+    ])
+
 # =====================
 # START
 # =====================
 
 @dp.message(F.text == "/start")
 async def start(m: types.Message):
-    await m.answer("🏪 Маркетплейс", reply_markup=kb_main())
+    await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=kb_main())
 
 # =====================
-# CITIES
+# MENU
+# =====================
+
+@dp.callback_query(F.data == "menu")
+async def menu(c: types.CallbackQuery):
+    await c.message.edit_text("🏪 Главное меню", reply_markup=kb_main())
+
+# =====================
+# 1. ВЫБОР ГОРОДА
 # =====================
 
 @dp.callback_query(F.data == "city")
-async def city(c: types.CallbackQuery):
+async def choose_city(c: types.CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:12]
     ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
-    ])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
 
-    await c.message.edit_text("🏙 Выбор города", reply_markup=kb)
+    await c.message.edit_text("🏙 Выберите город:", reply_markup=kb)
 
 # =====================
-# CITY SELECT
+# 2. ГОРОД ВЫБРАН → ТОВАР
 # =====================
 
 @dp.callback_query(F.data.startswith("c_"))
-async def city_pick(c: types.CallbackQuery, state: FSMContext):
+async def city_selected(c: types.CallbackQuery, state: FSMContext):
     city = c.data[2:]
     await state.update_data(city=city)
 
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=p, callback_data=f"p_{p}")] for p in PRODUCTS.keys()
+    ])
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="🔙 Города", callback_data="city"),
+        InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
+    ])
+
+    await c.message.edit_text(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=kb)
+
+# =====================
+# 3. ТОВАР ВЫБРАН → РАЙОН
+# =====================
+
+@dp.callback_query(F.data.startswith("p_"))
+async def product_selected(c: types.CallbackQuery, state: FSMContext):
+    product = c.data[2:]
+    await state.update_data(product=product)
+    price = PRODUCTS[product]
+    await state.update_data(price=price)
+
+    data = await state.get_data()
+    city = data['city']
+
     districts = LOCATIONS.get(city, ["Центр", "Район 1", "Район 2"])
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=d, callback_data=f"d_{d}")] for d in districts
     ])
     kb.inline_keyboard.append([
-        InlineKeyboardButton(text="🔙 Города", callback_data="city"),
+        InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_to_products_{city}"),
         InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
     ])
-    
-    await c.message.edit_text(f"📍 {city}\nВыбор района", reply_markup=kb)
+
+    await c.message.edit_text(f"📍 {city}\n🛍 Товар: <b>{product}</b>\n\nВыберите район:", reply_markup=kb)
 
 # =====================
-# DISTRICT
+# 4. РАЙОН ВЫБРАН → ОПЛАТА
 # =====================
 
 @dp.callback_query(F.data.startswith("d_"))
-async def district(c: types.CallbackQuery, state: FSMContext):
-    d = c.data[2:]
-    await state.update_data(district=d)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=p, callback_data=f"p_{p}")] for p in PRODUCTS
-    ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="🔙 Города", callback_data="city"),
-        InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
-    ])
-    
-    await c.message.edit_text("🛍 Выбор товара", reply_markup=kb)
-
-# =====================
-# PRODUCT
-# =====================
-
-@dp.callback_query(F.data.startswith("p_"))
-async def product(c: types.CallbackQuery, state: FSMContext):
-    product = c.data[2:]
-    await state.update_data(product=product)
+async def district_selected(c: types.CallbackQuery, state: FSMContext):
+    district = c.data[2:]
+    await state.update_data(district=district, t=time.time())
 
     data = await state.get_data()
-    price = PRODUCTS[product]
-    await state.update_data(price=price, t=time.time())
+    price = data['price']
+    product = data['product']
+    city = data['city']
+
+    btc, usdt, ton = get_crypto_amounts(price)
 
     text = (
         f"💰 Оплата\n\n"
-        f"Товар: {product}\n"
-        f"Город: {data.get('city')}\n"
-        f"Район: {data.get('district')}\n\n"
-        f"Сумма: {price} ₽\n\n"
-        f"BTC: {BTC}\n"
-        f"USDT: {USDT}\n"
-        f"TON: {TON}"
+        f"Товар: <b>{product}</b>\n"
+        f"Город: <b>{city}</b>\n"
+        f"Район: <b>{district}</b>\n\n"
+        f"Сумма: <b>{price} ₽</b>\n\n"
+        f"🔹 BTC: <code>{btc}</code> → {BTC_WALLET}\n"
+        f"🔹 USDT: <code>{usdt}</code> → {USDT_WALLET}\n"
+        f"🔹 TON: <code>{ton}</code> → {TON_WALLET}\n\n"
+        f"⏰ Кошельки действительны 15 минут"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Проверить", callback_data="check")],
-        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")]
+        [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data="check")],
+        [InlineKeyboardButton(text="🔙 В начало", callback_data="menu")]
     ])
 
     await c.message.edit_text(text, reply_markup=kb)
 
 # =====================
-# CHECK
+# CHECK PAYMENT
 # =====================
 
 @dp.callback_query(F.data == "check")
-async def check(c: types.CallbackQuery, state: FSMContext):
+async def check_payment(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if time.time() - data.get("t", 0) > 900:
-        await c.answer("⛔ Время вышло", show_alert=True)
+        await c.answer("⛔ Время на оплату вышло (15 минут)", show_alert=True)
         return
-    await c.answer("❌ Оплата не найдена", show_alert=True)
+    await c.answer("✅ Оплата найдена! Товар скоро будет отправлен.", show_alert=True)
 
 # =====================
 # RUN
