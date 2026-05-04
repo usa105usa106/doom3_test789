@@ -1,8 +1,4 @@
-﻿FINAL FULL TELEGRAM SHOP BOT (AIogram 3, Railway ready)
-
-Includes EVERYTHING requested
-
-import asyncio import logging import json import os import random import time from aiogram import Bot, Dispatcher, types from aiogram.client.default import DefaultBotProperties from aiogram.filters import Command from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton from aiogram.fsm.context import FSMContext from aiogram.fsm.state import State, StatesGroup from aiogram.fsm.storage.memory import MemoryStorage
+﻿import asyncio import logging import json import os import random import time from aiogram import Bot, Dispatcher, types from aiogram.client.default import DefaultBotProperties from aiogram.filters import Command from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton from aiogram.fsm.context import FSMContext from aiogram.fsm.state import State, StatesGroup from aiogram.fsm.storage.memory import MemoryStorage
 
 logging.basicConfig(level=logging.INFO)
 
