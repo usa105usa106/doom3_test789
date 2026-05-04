@@ -1,6 +1,7 @@
 ﻿import asyncio
 import logging
 import os
+import random
 import time
 
 from aiogram import Bot, Dispatcher, types, F
@@ -8,7 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 logging.basicConfig(level=logging.INFO)
 
@@ -33,7 +34,7 @@ class S(StatesGroup):
     district = State()
 
 # =====================
-# PRODUCTS
+# DATA
 # =====================
 
 PRODUCTS = {
@@ -43,10 +44,6 @@ PRODUCTS = {
     "Плед": 1800,
     "Шарф": 900
 }
-
-# =====================
-# CITIES (полный список)
-# =====================
 
 ALL_CITIES = [
     "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань",
@@ -70,10 +67,6 @@ ALL_CITIES = [
     "Королёв","Мытищи","Подольск","Люберцы","Серпухов",
     "Одинцово","Красногорск","Балашиха","Раменское","Жуковский"
 ]
-
-# =====================
-# DISTRICTS
-# =====================
 
 LOCATIONS = {
     "Москва": ["Тверской", "Арбат", "Хамовники", "Пресненский", "Басманный"],
@@ -128,10 +121,7 @@ LOCATIONS = {
     "Симферополь": ["Центральный", "Киевский", "Железнодорожный"]
 }
 
-# =====================
-# WALLETS + КУРСЫ
-# =====================
-
+# WALLETS
 BTC_WALLET = "bc1qexample"
 USDT_WALLET = "TXexample"
 TON_WALLET = "UQexample"
@@ -141,23 +131,18 @@ USDT_RATE = 90
 TON_RATE = 320
 
 def get_crypto_amounts(rub: int):
-    btc = round(rub / BTC_RATE, 6)
-    usdt = round(rub / USDT_RATE, 2)
-    ton = round(rub / TON_RATE, 3)
-    return btc, usdt, ton
+    return round(rub / BTC_RATE, 6), round(rub / USDT_RATE, 2), round(rub / TON_RATE, 3)
 
 # =====================
 # KEYBOARDS
 # =====================
 
-def kb_main():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏙 Выбрать город", callback_data="city")]
-    ])
-
-def kb_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏙 Выбрать город", callback_data="city")]
+def main_kb():
+    return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
+        [KeyboardButton(text="🏙 Выбрать город")],
+        [KeyboardButton(text="📦 Мой заказ")],
+        [KeyboardButton(text="💰 Проверить оплату")],
+        [KeyboardButton(text="ℹ️ О боте")]
     ])
 
 # =====================
@@ -166,33 +151,42 @@ def kb_menu():
 
 @dp.message(F.text == "/start")
 async def start(m: types.Message):
-    await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=kb_main())
+    await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=main_kb())
 
 # =====================
-# MENU
+# MAIN MENU BUTTONS
 # =====================
 
-@dp.callback_query(F.data == "menu")
-async def menu(c: types.CallbackQuery):
-    await c.message.edit_text("🏪 Главное меню", reply_markup=kb_main())
-
-# =====================
-# 1. ВЫБОР ГОРОДА
-# =====================
-
-@dp.callback_query(F.data == "city")
-async def choose_city(c: types.CallbackQuery):
+@dp.message(F.text == "🏙 Выбрать город")
+async def choose_city_btn(m: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:12]
     ])
     kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
+    await m.answer("🏙 Выберите город:", reply_markup=kb)
 
-    await c.message.edit_text("🏙 Выберите город:", reply_markup=kb)
+@dp.message(F.text == "📦 Мой заказ")
+async def my_order(m: types.Message):
+    await m.answer("📦 У вас пока нет активных заказов.")
+
+@dp.message(F.text == "💰 Проверить оплату")
+async def check_payment_btn(m: types.Message):
+    await m.answer("💰 У вас нет неоплаченных заказов.")
+
+@dp.message(F.text == "ℹ️ О боте")
+async def about(m: types.Message):
+    await m.answer("🛒 Это тестовый маркетплейс.\nОплата в крипте.\nКошельки действительны 30 минут.")
 
 # =====================
-# 2. ГОРОД ВЫБРАН → ТОВАР
+# INLINE HANDLERS
 # =====================
 
+@dp.callback_query(F.data == "menu")
+async def menu(c: types.CallbackQuery):
+    await c.message.edit_text("🏪 Главное меню", reply_markup=None)
+    await c.message.answer("Выберите действие:", reply_markup=main_kb())
+
+# 1. ГОРОД
 @dp.callback_query(F.data.startswith("c_"))
 async def city_selected(c: types.CallbackQuery, state: FSMContext):
     city = c.data[2:]
@@ -208,50 +202,42 @@ async def city_selected(c: types.CallbackQuery, state: FSMContext):
 
     await c.message.edit_text(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=kb)
 
-# =====================
-# 3. ТОВАР ВЫБРАН → РАЙОН
-# =====================
-
+# 2. ТОВАР
 @dp.callback_query(F.data.startswith("p_"))
 async def product_selected(c: types.CallbackQuery, state: FSMContext):
     product = c.data[2:]
-    await state.update_data(product=product)
-    price = PRODUCTS[product]
-    await state.update_data(price=price)
+    await state.update_data(product=product, price=PRODUCTS[product])
 
     data = await state.get_data()
     city = data['city']
-
     districts = LOCATIONS.get(city, ["Центр", "Район 1", "Район 2"])
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=d, callback_data=f"d_{d}")] for d in districts
     ])
     kb.inline_keyboard.append([
-        InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_to_products_{city}"),
+        InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_products"),
         InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
     ])
 
     await c.message.edit_text(f"📍 {city}\n🛍 Товар: <b>{product}</b>\n\nВыберите район:", reply_markup=kb)
 
-# =====================
-# 4. РАЙОН ВЫБРАН → ОПЛАТА
-# =====================
-
+# 3. РАЙОН → ОПЛАТА
 @dp.callback_query(F.data.startswith("d_"))
 async def district_selected(c: types.CallbackQuery, state: FSMContext):
     district = c.data[2:]
-    await state.update_data(district=district, t=time.time())
-
     data = await state.get_data()
+    
+    order_id = random.randint(1000000, 9999999)
+    await state.update_data(district=district, order_id=order_id, t=time.time())
+
     price = data['price']
     product = data['product']
     city = data['city']
-
     btc, usdt, ton = get_crypto_amounts(price)
 
     text = (
-        f"💰 Оплата\n\n"
+        f"🆔 <b>Заказ №{order_id}</b>\n\n"
         f"Товар: <b>{product}</b>\n"
         f"Город: <b>{city}</b>\n"
         f"Район: <b>{district}</b>\n\n"
@@ -259,27 +245,37 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
         f"🔹 BTC: <code>{btc}</code> → {BTC_WALLET}\n"
         f"🔹 USDT: <code>{usdt}</code> → {USDT_WALLET}\n"
         f"🔹 TON: <code>{ton}</code> → {TON_WALLET}\n\n"
-        f"⏰ Кошельки действительны 15 минут"
+        f"⏰ Кошельки и сумма актуальны 30 минут"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data="check")],
-        [InlineKeyboardButton(text="🔙 В начало", callback_data="menu")]
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")]
     ])
 
     await c.message.edit_text(text, reply_markup=kb)
 
-# =====================
-# CHECK PAYMENT
-# =====================
+    # Уведомление через 20 минут
+    asyncio.create_task(reminder(c.from_user.id, order_id))
 
+async def reminder(user_id: int, order_id: int):
+    await asyncio.sleep(20 * 60)  # 20 минут
+    try:
+        await bot.send_message(
+            user_id,
+            f"⏳ Заказ №{order_id}\n\nОсталось 10 минут до окончания брони кошельков!"
+        )
+    except:
+        pass
+
+# Проверка оплаты
 @dp.callback_query(F.data == "check")
 async def check_payment(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if time.time() - data.get("t", 0) > 900:
-        await c.answer("⛔ Время на оплату вышло (15 минут)", show_alert=True)
+    if time.time() - data.get("t", 0) > 1800:  # 30 минут
+        await c.answer("⛔ Время на оплату вышло (30 минут)", show_alert=True)
         return
-    await c.answer("✅ Оплата найдена! Товар скоро будет отправлен.", show_alert=True)
+    await c.answer("✅ Оплата найдена! Товар в обработке.", show_alert=True)
 
 # =====================
 # RUN
