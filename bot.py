@@ -14,6 +14,14 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = "ТВОЙ_ТОКЕН"
 
+import os
+
+token = os.getenv("BOT_TOKEN")
+
+print("RAW:", repr(token))
+print("LEN:", len(token) if token else None)
+print("HAS_COLON:", ":" in token if token else None)
+
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
