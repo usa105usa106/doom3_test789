@@ -13,12 +13,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import requests
 
 # ===================== НАСТРОЙКИ =====================
-BOT_TOKEN = "ТОКЕН_ОТ_BOTFATHER_СЮДА"
-BTC_WALLET = "bc1qтвой_btc_адрес_сюда"
-USDT_WALLET = "твой_usdt_trc20_адрес_сюда"
-TON_WALLET = "твой_ton_адрес_сюда"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BTC_WALLET = os.getenv("BTC_WALLET")
+USDT_WALLET = os.getenv("USDT_WALLET")
+TON_WALLET = os.getenv("TON_WALLET")
 
-ADMIN_ID = None  # Первый /start станет админом
+ADMIN_ID = None
 
 FILE_PRODUCTS = "products.json"
 
@@ -203,13 +203,13 @@ async def process_payment(callback: types.CallbackQuery):
     asyncio.create_task(timer_warnings(user_id, expires))
 
 async def timer_warnings(user_id: int, expires: float):
-    await asyncio.sleep(1200)  # 20 минут
+    await asyncio.sleep(1200)
     if user_id in reservations and reservations[user_id]["expires"] == expires:
         try:
             await bot.send_message(user_id, "⏰ Осталось 10 минут на оплату!")
         except:
             pass
-    await asyncio.sleep(600)  # +10 минут
+    await asyncio.sleep(600)
     if user_id in reservations and reservations[user_id]["expires"] == expires:
         product = reservations[user_id]["product"]
         del reservations[user_id]
