@@ -41,7 +41,7 @@ def load(path, default):
 PRODUCTS = load(FILE_PRODUCTS, {"Футболка": 1200})
 USERS = set(load(FILE_USERS, []))
 ADMIN_ID = load(FILE_ADMIN, None)
-INFO_TEXT = open(FILE_INFO).read() if os.path.exists(FILE_INFO) else "Магазин"
+INFO_TEXT = open(FILE_INFO, encoding="cp1251").read() if os.path.exists(FILE_INFO) else "Магазин"
 
 # ===== SAVE =====
 def save(file, data):
