@@ -5,6 +5,7 @@ import os
 import random
 import time
 from aiogram import Bot, Dispatcher, types
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -39,7 +40,12 @@ EXTRA_PRODUCTS = ["Бейсболка", "Рюкзак", "Сумка-тоут", "
 # =====================================================
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode="HTML")
+)
+
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 rates = {"btc": 0.0, "usdt": 0.0, "ton": 0.0}
@@ -203,7 +209,7 @@ async def process_payment(callback: types.CallbackQuery):
     asyncio.create_task(timer_warnings(user_id, expires))
 
 async def timer_warnings(user_id: int, expires: float):
-    await asyncio.sleep(1200)
+    await asyncio.sleep(1200)  # 20 минут
     if user_id in reservations and reservations[user_id]["expires"] == expires:
         try:
             await bot.send_message(user_id, "⏰ Осталось 10 минут на оплату!")
