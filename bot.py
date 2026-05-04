@@ -1,8 +1,16 @@
-﻿import asyncio import logging import os import time
+﻿import asyncio
+import logging
+import os
+import time
 
-from aiogram import Bot, Dispatcher, types, F from aiogram.client.default import DefaultBotProperties from aiogram.fsm.storage.memory import MemoryStorage from aiogram.fsm.state import State, StatesGroup from aiogram.fsm.context import FSMContext from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO))
 
 =====================
 
