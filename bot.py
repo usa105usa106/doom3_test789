@@ -23,7 +23,11 @@ ADMIN_ID = None
 
 FILE_PRODUCTS = "products.json"
 
-DEFAULT_CITIES = ["Москва", "Санкт-Петербург", "Екатеринбург", "Новосибирск", "Краснодар", "Казань"]
+DEFAULT_CITIES = [
+    "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
+    "Нижний Новгород", "Челябинск", "Омск", "Самара", "Ростов-на-Дону",
+    "Уфа", "Красноярск", "Воронеж", "Пермь", "Волгоград"
+]
 
 LOCATIONS = {
     "Москва": ["Центр (Тверской)", "Север", "Юг", "Восток", "Запад", "Любой район"],
@@ -56,6 +60,8 @@ class OrderStates(StatesGroup):
     waiting_city = State()
     waiting_product = State()
     waiting_district = State()
+    waiting_add_name = State()
+    waiting_add_price = State()
 
 def load_products():
     if os.path.exists(FILE_PRODUCTS):
@@ -201,7 +207,10 @@ async def process_payment(callback: types.CallbackQuery):
         f"🔸 BTC: {btc_amt:.8f} → {BTC_WALLET}\n"
         f"🔸 USDT (TRC20): {usdt_amt:.2f} → {USDT_WALLET}\n"
         f"🔸 TON: {ton_amt:.3f} → {TON_WALLET}\n\n"
-        f"⏳ У тебя есть 30 минут на оплату."
+        f"⚠️ Кошельки и сумма действуют **только до истечения брони** (30 минут).\n"
+        f"После этого система выдаст новые уникальные кошельки и сумму для идентификации платежа.\n\n"
+        f"⏳ У тебя есть 30 минут на оплату.\n"
+        f"После перевода **обязательно** напиши /paid"
     )
     await callback.message.edit_text(text)
     await callback.answer("✅ Забронировано!")
@@ -209,7 +218,7 @@ async def process_payment(callback: types.CallbackQuery):
     asyncio.create_task(timer_warnings(user_id, expires))
 
 async def timer_warnings(user_id: int, expires: float):
-    await asyncio.sleep(1200)  # 20 минут
+    await asyncio.sleep(1200)
     if user_id in reservations and reservations[user_id]["expires"] == expires:
         try:
             await bot.send_message(user_id, "⏰ Осталось 10 минут на оплату!")
