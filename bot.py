@@ -29,11 +29,14 @@ FILE_ADMIN = "admin.json"
 FILE_INFO = "info.txt"
 
 # ===== LOAD =====
-def load(file, default):
-    if os.path.exists(file):
-        with open(file, "r", encoding="utf-8") as f:
+import json
+
+def load(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    return default
+    except FileNotFoundError:
+        return default
 
 PRODUCTS = load(FILE_PRODUCTS, {"Футболка": 1200})
 USERS = set(load(FILE_USERS, []))
