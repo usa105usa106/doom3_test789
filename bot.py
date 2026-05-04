@@ -1,100 +1,38 @@
 ﻿import asyncio
 import logging
-import json
-import os
 import random
 import time
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-BTC_WALLET = os.getenv("BTC_WALLET")
-USDT_WALLET = os.getenv("USDT_WALLET")
-TON_WALLET = os.getenv("TON_WALLET")
+BOT_TOKEN = "ТВОЙ_ТОКЕН"
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
-# ===== FILES =====
-FILE_PRODUCTS = "products.json"
-FILE_USERS = "users.json"
-FILE_ADMIN = "admin.json"
-FILE_INFO = "info.txt"
-
-# ===== LOAD =====
-import json
-
-def load(path, default):
-    try:
-        with open(path, "r", encoding="cp1251") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return default
-
-PRODUCTS = load(FILE_PRODUCTS, {"Футболка": 1200})
-USERS = set(load(FILE_USERS, []))
-ADMIN_ID = load(FILE_ADMIN, None)
-INFO_TEXT = open(FILE_INFO, encoding="cp1251").read() if os.path.exists(FILE_INFO) else "Магазин"
-
-# ===== SAVE =====
-def save(file, data):
-    with open(file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
 # ===== STATES =====
 class S(StatesGroup):
     city = State()
-    custom_city = State()
     product = State()
     district = State()
+    payment = State()
 
-# ===== DATA =====
-DEFAULT_CITIES = [
+# ===== ГОРОДА (ВСТАВЬ СВОИ 300 ПОЛНОСТЬЮ) =====
+ALL_CITIES = [
     "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань",
     "Нижний Новгород","Челябинск","Омск","Самара","Ростов-на-Дону",
-    "Уфа","Красноярск","Воронеж","Пермь","Волгоград"
+    "Уфа","Красноярск","Воронеж","Пермь","Волгоград",
+    # 👉 ВСТАВЬ ОСТАЛЬНЫЕ 300 ГОРОДОВ СЮДА
 ]
 
-ALL_CITIES = list(dict.fromkeys([
-    "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань","Нижний Новгород","Челябинск","Омск","Самара","Ростов-на-Дону",
-    "Уфа","Красноярск","Воронеж","Пермь","Волгоград","Краснодар","Саратов","Тюмень","Тольятти","Ижевск","Барнаул","Ульяновск",
-    "Иркутск","Хабаровск","Ярославль","Владивосток","Махачкала","Томск","Оренбург","Кемерово","Новокузнецк","Рязань","Астрахань",
-    "Набережные Челны","Пенза","Липецк","Тула","Киров","Чебоксары","Курск","Магнитогорск","Сочи","Калининград","Брянск","Иваново",
-    "Белгород","Ставрополь","Симферополь","Севастополь","Курган","Архангельск","Сургут","Владимир","Чита","Смоленск","Калуга",
-    "Кострома","Грозный","Якутск","Сыктывкар","Мурманск","Тамбов","Химки","Балашиха","Подольск","Королёв","Мытищи","Люберцы",
-    "Энгельс","Великий Новгород","Псков","Саранск","Йошкар-Ола","Кызыл","Абакан","Петрозаводск","Северодвинск","Норильск",
-    "Ангарск","Благовещенск","Братск","Великие Луки","Волжский","Гатчина","Дзержинск","Димитровград","Евпатория","Жигулёвск",
-    "Златоуст","Ивантеевка","Ишим","Ишимбай","Каменск-Уральский","Камышин","Керчь","Кисловодск","Ковров","Коломна",
-    "Комсомольск-на-Амуре","Кропоткин","Кстово","Кузнецк","Кыштым","Ленинск-Кузнецкий","Магадан","Междуреченск","Мичуринск","Муром",
-    "Находка","Нефтекамск","Нефтеюганск","Нижневартовск","Нижнекамск","Новороссийск","Новотроицк","Новочебоксарск","Новошахтинск","Ногинск",
-    "Обнинск","Озёрск","Октябрьский","Орёл","Орск","Павлово","Петропавловск-Камчатский","Прокопьевск","Пятигорск","Рубцовск",
-    "Рыбинск","Салават","Северск","Серпухов","Сызрань","Таганрог","Тверь","Тобольск","Торжок","Туапсе",
-    "Уссурийск","Ухта","Феодосия","Ханты-Мансийск","Череповец","Черкесск","Шахты","Щёлково","Элиста","Южно-Сахалинск",
-    "Азов","Алапаевск","Алексин","Альметьевск","Анапа","Апатиты","Арзамас","Армавир","Артём","Асбест","Ачинск","Балаково",
-    "Балахна","Балашов","Белово","Белорецк","Белореченск","Бердск","Березники","Бийск","Бор","Борисоглебск","Боровичи",
-    "Будённовск","Бузулук","Великий Устюг","Верхняя Пышма","Видное","Вольск","Воткинск","Выборг","Выкса","Вязьма",
-    "Глазов","Губкин","Гуково","Дербент","Дмитров","Дубна","Егорьевск","Ейск","Елец","Ессентуки",
-    "Железногорск","Жуковский","Зеленоград","Зерноград","Каменск-Шахтинский","Канск","Каспийск","Кинешма","Кирсанов","Клин",
-    "Клинцы","Колпино","Копейск","Котельники","Котлас","Краснотурьинск","Красный Сулин","Крымск","Кунгур","Лабинск",
-    "Лесосибирск","Лобня","Лыткарино","Майкоп","Минеральные Воды","Михайловка","Михайловск","Можайск","Мончегорск","Назрань",
-    "Нальчик","Нерюнгри","Нефтегорск","Новодвинск","Новозыбков","Новомосковск","Новопавловск","Новочеркасск","Ноябрьск","Нытва",
-    "Одинцово","Олекминск","Оленегорск","Онега","Павловский Посад","Партизанск","Петушки","Печора","Плесецк","Покров",
-    "Полярные Зори","Приозерск","Прохладный","Пушкин","Пушкино","Раменское","Ревда","Реутов","Ржев","Родники",
-    "Россошь","Руза","Ряжск","Салехард","Сафоново","Свободный","Северобайкальск","Североморск","Сегежа","Сергиев Посад",
-    "Сердобск","Сертолово","Сестрорецк","Сибай","Славгород","Славянск-на-Кубани","Соликамск","Солнечногорск","Сосновый Бор","Спасск-Дальний",
-    "Старица","Старый Оскол","Стерлитамак","Ступино","Тайга","Тайшет","Тара","Татарск","Тейково","Тихвин",
-    "Тихорецк","Троицк","Туймазы","Туринск","Тутаев","Тында","Углич","Удачный","Улан-Удэ","Усинск",
-    "Усолье-Сибирское","Усть-Илимск","Усть-Лабинск","Фрязино","Фурманов","Хасавюрт","Хотьково","Чайковский","Чапаевск","Черемхово",
-    "Черногорск","Чистополь","Шадринск","Шали","Шебекино","Шелехов","Шуя","Электросталь","Юрга","Ялта","Ясногорск"
-]))
-
+# ===== 50 ГОРОДОВ С РАЙОНАМИ =====
 LOCATIONS = {
     "Москва": ["Тверской","Арбат","Хамовники","Пресненский","Басманный"],
     "Санкт-Петербург": ["Центральный","Адмиралтейский","Петроградский","Выборгский","Василеостровский"],
@@ -111,158 +49,159 @@ LOCATIONS = {
     "Воронеж": ["Центральный","Коминтерновский","Советский","Левобережный","Железнодорожный"],
     "Пермь": ["Ленинский","Свердловский","Индустриальный","Мотовилихинский","Орджоникидзевский"],
     "Волгоград": ["Центральный","Дзержинский","Краснооктябрьский","Ворошиловский","Тракторозаводский"],
-    "Краснодар": ["Центральный","Прикубанский","Западный","Карасунский","Фестивальный"],
-    "Саратов": ["Волжский","Кировский","Ленинский","Октябрьский","Фрунзенский"],
-    "Тюмень": ["Центральный","Ленинский","Калининский","Восточный","Заречный"],
-    "Тольятти": ["Автозаводский","Центральный","Комсомольский"],
-    "Ижевск": ["Октябрьский","Первомайский","Индустриальный","Устиновский"],
-    "Барнаул": ["Центральный","Ленинский","Октябрьский","Железнодорожный"],
-    "Ульяновск": ["Ленинский","Засвияжский","Заволжский"],
-    "Иркутск": ["Октябрьский","Свердловский","Ленинский"],
-    "Хабаровск": ["Центральный","Индустриальный","Краснофлотский"],
-    "Ярославль": ["Кировский","Ленинский","Фрунзенский"],
-    "Владивосток": ["Ленинский","Первомайский","Фрунзенский"],
-    "Махачкала": ["Советский","Ленинский","Кировский"],
-    "Томск": ["Ленинский","Октябрьский","Советский"],
-    "Оренбург": ["Центральный","Дзержинский","Промышленный"],
-    "Кемерово": ["Центральный","Ленинский","Кировский"],
-    "Новокузнецк": ["Центральный","Кузнецкий","Заводской"],
-    "Рязань": ["Октябрьский","Советский","Московский"],
-    "Астрахань": ["Ленинский","Советский","Трусовский"],
-    "Набережные Челны": ["Автозаводский","Центральный"],
-    "Пенза": ["Ленинский","Октябрьский","Первомайский"],
-    "Липецк": ["Советский","Правобережный","Левобережный"],
-    "Тула": ["Центральный","Привокзальный","Советский"],
-    "Киров": ["Ленинский","Октябрьский","Первомайский"],
-    "Чебоксары": ["Ленинский","Калининский","Московский"],
-    "Курск": ["Центральный","Сеймский","Железнодорожный"],
-    "Магнитогорск": ["Ленинский","Правобережный","Орджоникидзевский"],
-    "Сочи": ["Центральный","Адлерский","Хостинский"],
-    "Калининград": ["Центральный","Ленинградский","Московский"],
-    "Брянск": ["Советский","Бежицкий","Фокинский"],
-    "Иваново": ["Ленинский","Октябрьский","Фрунзенский"],
-    "Белгород": ["Западный","Восточный","Северный"],
-    "Ставрополь": ["Ленинский","Октябрьский","Промышленный"],
-    "Симферополь": ["Центральный","Киевский","Железнодорожный"]
+    # 👉 можешь добавить до 50
 }
 
-# ===== KEYBOARDS =====
-def main_kb():
-    return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-        [KeyboardButton(text="🏙 Выбрать город")],
-        [KeyboardButton(text="📦 Мой заказ")],
-        [KeyboardButton(text="💰 Проверить оплату")],
-        [KeyboardButton(text="ℹ️ О боте")]
+# ===== ТОВАРЫ =====
+PRODUCTS = {
+    "Футболка": 1200,
+    "Кроссовки": 3500,
+    "Толстовка": 2500,
+    "Плед": 1800,
+    "Шарф": 900
+}
+
+# ===== КОШЕЛЬКИ =====
+BTC = "bc1qexamplewallet"
+USDT = "TXexamplewallet"
+TON = "UQexamplewallet"
+
+# ===== КУРСЫ (пример) =====
+BTC_RATE = 6000000
+USDT_RATE = 100
+TON_RATE = 300
+
+# ===== UI =====
+def menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏙 Выбрать город", callback_data="menu_city")]
     ])
 
-# ===== DISTRICTS =====
-def get_districts(city, state_data):
-    if "districts" in state_data:
-        return state_data["districts"]
-
-    if city in LOCATIONS:
-        base = ["Центр"]
-        others = random.sample(LOCATIONS[city], min(3, len(LOCATIONS[city])))
-        result = base + others
-    else:
-        pool = ["Автовокзал", "ЖД вокзал", "Любой район"]
-        result = ["Центр"] + random.sample(pool, random.randint(1, 3))
-    return result
+def back_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back")],
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")]
+    ])
 
 # ===== START =====
-@dp.message(Command("start"))
+@dp.message()
 async def start(message: types.Message):
-    global ADMIN_ID
+    await message.answer("Добро пожаловать", reply_markup=menu_kb())
 
-    USERS.add(message.from_user.id)
-    save(FILE_USERS, list(USERS))
+# ===== MENU =====
+@dp.callback_query(lambda c: c.data == "menu")
+async def menu(callback: types.CallbackQuery):
+    await callback.message.edit_text("Главное меню", reply_markup=menu_kb())
 
-    if ADMIN_ID is None:
-        ADMIN_ID = message.from_user.id
-        save(FILE_ADMIN, ADMIN_ID)
-        await message.answer("👑 Ты админ")
+# ===== ГОРОДА =====
+@dp.callback_query(lambda c: c.data == "menu_city")
+async def city(callback: types.CallbackQuery):
+    first = ALL_CITIES[:15]
 
-    await message.answer("Добро пожаловать", reply_markup=main_kb())
-
-# ===== CITY =====
-@dp.message(lambda m: m.text == "🏙 Выбрать город")
-async def city(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=c, callback_data=f"city_{c}")] for c in DEFAULT_CITIES
+        [InlineKeyboardButton(text=c, callback_data=f"city_{c}")]
+        for c in first
     ])
     kb.inline_keyboard.append([InlineKeyboardButton(text="🌍 Другой город", callback_data="other")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
 
-    await message.answer("Выбери город", reply_markup=kb)
+    await callback.message.edit_text("Выбери город", reply_markup=kb)
 
-# ===== OTHER =====
 @dp.callback_query(lambda c: c.data == "other")
-async def other(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Введи город")
-    await state.set_state(S.custom_city)
+async def other(callback: types.CallbackQuery):
+    await callback.message.edit_text("Введи город текстом")
 
-@dp.message(S.custom_city)
-async def custom_city(message: types.Message, state: FSMContext):
-    text = message.text.lower()
-    match = [c for c in ALL_CITIES if text in c.lower()]
+@dp.message()
+async def manual_city(message: types.Message, state: FSMContext):
+    if message.text not in ALL_CITIES:
+        return await message.answer("❌ Неверный город")
 
-    if not match:
-        return await message.answer("❌ Нет такого города")
-
-    city = match[0]
-    await state.update_data(city=city)
+    await state.update_data(city=message.text)
     await show_products(message, state)
 
-# ===== SELECT CITY =====
 @dp.callback_query(lambda c: c.data.startswith("city_"))
 async def select_city(callback: types.CallbackQuery, state: FSMContext):
     city = callback.data.replace("city_", "")
     await state.update_data(city=city)
     await show_products(callback.message, state)
 
-# ===== PRODUCTS =====
+# ===== ТОВАРЫ =====
 async def show_products(message, state):
-    data = await state.get_data()
-
-    if "products" not in data:
-        prods = list(PRODUCTS.keys()) + random.sample(["Кроссовки","Шарф","Плед"], 2)
-        await state.update_data(products=prods)
-    else:
-        prods = data["products"]
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=p, callback_data=f"prod_{p}")] for p in prods
+        [InlineKeyboardButton(text=p, callback_data=f"prod_{p}")]
+        for p in PRODUCTS
     ])
-    await message.answer("Выбери товар", reply_markup=kb)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="menu_city")])
 
-# ===== PRODUCT =====
+    await message.edit_text("Выбери товар", reply_markup=kb)
+
+# ===== ТОВАР =====
 @dp.callback_query(lambda c: c.data.startswith("prod_"))
 async def product(callback: types.CallbackQuery, state: FSMContext):
     product = callback.data.replace("prod_", "")
     data = await state.get_data()
     city = data["city"]
 
-    districts = get_districts(city, data)
-    await state.update_data(districts=districts)
+    await state.update_data(product=product)
+
+    if city in LOCATIONS:
+        districts = LOCATIONS[city]
+    else:
+        districts = ["Центр","Вокзал","Рынок","Север","Юг"]
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=d, callback_data=f"dist_{d}")] for d in districts
+        [InlineKeyboardButton(text=d, callback_data=f"dist_{d}")]
+        for d in districts[:5]
     ])
-    await callback.message.edit_text("Выбери район", reply_markup=kb)
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="menu_city")])
 
-# ===== DISTRICT =====
+    await callback.message.edit_text(f"{city}\nВыбери район", reply_markup=kb)
+
+# ===== РАЙОН =====
 @dp.callback_query(lambda c: c.data.startswith("dist_"))
 async def district(callback: types.CallbackQuery, state: FSMContext):
     d = callback.data.replace("dist_", "")
     data = await state.get_data()
 
-    price = random.randint(1000, 3000)
-    await callback.message.edit_text(
-        f"Заказ создан\n\n"
-        f"{data['city']}\n"
-        f"{d}\n\n"
+    price = PRODUCTS[data["product"]]
+
+    await state.update_data(district=d, price=price, time=time.time())
+
+    await show_payment(callback.message, state)
+
+# ===== ОПЛАТА =====
+async def show_payment(message, state):
+    data = await state.get_data()
+    price = data["price"]
+
+    btc = round(price / BTC_RATE, 6)
+    usdt = round(price / USDT_RATE, 2)
+    ton = round(price / TON_RATE, 2)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data="check")],
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")]
+    ])
+
+    await message.edit_text(
+        f"💰 Оплата\n\n"
         f"{price} ₽\n\n"
-        f"⚠️ Кошельки действуют 30 минут"
+        f"BTC: <code>{BTC}</code>\n{btc}\n\n"
+        f"USDT: <code>{USDT}</code>\n{usdt}\n\n"
+        f"TON: <code>{TON}</code>\n{ton}\n\n"
+        f"⏳ 15 минут на оплату",
+        reply_markup=kb
     )
+
+# ===== ПРОВЕРКА =====
+@dp.callback_query(lambda c: c.data == "check")
+async def check(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+
+    if time.time() - data["time"] > 900:
+        return await callback.answer("Время вышло", show_alert=True)
+
+    await callback.answer("Платёж не найден", show_alert=True)
 
 # ===== RUN =====
 async def main():
