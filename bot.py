@@ -18,7 +18,12 @@ CONFIG
 
 # =====================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() if not BOT_TOKEN: raise ValueError("BOT_TOKEN not set")
+import os
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN not set")
 
 bot = Bot( token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML") )
 
