@@ -134,6 +134,12 @@ async def update_rates():
             pass
         await asyncio.sleep(30)
 
+class OrderStates(StatesGroup):
+    waiting_city = State()
+    waiting_product = State()
+    waiting_district = State()
+    waiting_order_number = State()
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     global ADMIN_ID
