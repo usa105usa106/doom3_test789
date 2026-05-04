@@ -33,9 +33,9 @@ import json
 
 def load(path, default):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="cp1251") as f:
             return json.load(f)
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return default
 
 PRODUCTS = load(FILE_PRODUCTS, {"Футболка": 1200})
