@@ -232,6 +232,18 @@ def products_info_text() -> str:
     lines += [f"• {escape(n)} — <b>{p} ₽</b>" for n, p in EXTRA_PRODUCTS.items()] or ["нет товаров"]
     return "\n".join(lines)
 
+
+def resolve_catalog_item(city: str, value: str):
+    catalog = current_catalog(city)
+    found = next((x for x in catalog if x["pid"] == value), None)
+    if found:
+        return found
+    if value.isdigit():
+        idx = int(value)
+        if 0 <= idx < len(catalog):
+            return catalog[idx]
+    return None
+
 def get_rates() -> dict:
     if not USE_LIVE_RATES:
         return {"btc": BTC_RATE, "usdt": USDT_RATE, "ton": TON_RATE}
@@ -312,6 +324,8 @@ async def send_city_menu(target, state: FSMContext):
     await target.answer("🏙 Выберите город:", reply_markup=city_keyboard())
 
 async def send_products(target, state: FSMContext, city: str):
+    # Перед показом товаров перечитываем сохранение, чтобы город видел свежие /add.
+    load_bot_data()
     await state.update_data(city=city)
     catalog = current_catalog(city)
     if not catalog:
@@ -404,6 +418,7 @@ async def add_cmd(m: types.Message):
         return
     rest = command_args(m.text)
     if rest.lower() == "info":
+        load_bot_data()
         await m.answer(products_info_text())
         return
     if not rest or len(rest.split()) < 2:
@@ -429,6 +444,7 @@ async def add_cmd(m: types.Message):
     else:
         EXTRA_PRODUCTS[name] = price
         group = "дополнительные"
+    ORDER_DRAFTS.clear()
     save_bot_data()
     await m.answer(f"✅ Товар сохранён: <b>{escape(name)}</b> — <b>{price} ₽</b>\nРаздел: <b>{group}</b>\nВсего: <b>{len(PRODUCTS)+len(EXTRA_PRODUCTS)}</b>")
 
@@ -526,7 +542,8 @@ async def support_btn(m: types.Message, state: FSMContext):
 
 @dp.message(S.support_message)
 async def support_input(m: types.Message, state: FSMContext):
-    if (m.text or "").startswith("/"):
+    text = m.text or ""
+    if text.startswith("/") or "Выбрать город" in text or "Мой заказ" in text or "Проверить оплату" in text or "О боте" in text or "Помощь" in text:
         await state.clear()
         await m.answer("❌ Обращение отменено.")
         return
@@ -569,6 +586,23 @@ async def cb_city_menu(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
     await send_city_menu(c.message, state)
 
+
+# Совместимость со старыми inline-кнопками из предыдущих версий.
+@dp.callback_query(F.data == "city")
+async def cb_city_menu_old(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    await send_city_menu(c.message, state)
+
+@dp.callback_query(F.data.startswith("c:"))
+async def cb_city_old(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    code = c.data.split(":", 1)[1]
+    city = CODE_CITIES.get(code)
+    if not city:
+        await send_city_menu(c.message, state)
+        return
+    await send_products(c.message, state, city)
+
 @dp.callback_query(F.data == "other_city")
 async def cb_other_city(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
@@ -584,6 +618,37 @@ async def cb_city(c: types.CallbackQuery, state: FSMContext):
         return
     await send_products(c.message, state, city)
 
+
+@dp.callback_query(F.data.startswith("p:"))
+async def cb_product_old(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    try:
+        _, cc, value = c.data.split(":", 2)
+    except Exception:
+        await c.answer("Кнопка устарела.", show_alert=True)
+        return
+
+    city = CODE_CITIES.get(cc)
+    if not city:
+        await send_city_menu(c.message, state)
+        return
+
+    load_bot_data()
+    item = resolve_catalog_item(city, value)
+    if not item:
+        await c.answer("Товар устарел или удалён.", show_alert=True)
+        await send_products(c.message, state, city)
+        return
+
+    districts = get_city_districts(city)
+    draft_id = str(random.randint(100000, 999999))
+    ORDER_DRAFTS[draft_id] = {"city": city, "item": item, "districts": districts, "created_at": time.time()}
+    await state.update_data(city=city, last_draft_id=draft_id)
+    await c.message.answer(
+        f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
+        reply_markup=districts_keyboard(draft_id, districts),
+    )
+
 @dp.callback_query(F.data.startswith("prod:"))
 async def cb_product(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
@@ -596,7 +661,8 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     if not city:
         await send_city_menu(c.message, state)
         return
-    item = next((x for x in current_catalog(city) if x["pid"] == pid), None)
+    load_bot_data()
+    item = resolve_catalog_item(city, pid)
     if not item:
         await c.answer("Товар устарел или удалён.", show_alert=True)
         await send_products(c.message, state, city)
@@ -621,6 +687,66 @@ async def cb_back_products(c: types.CallbackQuery, state: FSMContext):
     else:
         await send_city_menu(c.message, state)
 
+
+@dp.callback_query(F.data.startswith("d:"))
+async def cb_district_old(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    parts = c.data.split(":")
+
+    # Старый формат d:<draft_id>:<idx>
+    if len(parts) == 3 and parts[1] in ORDER_DRAFTS:
+        draft_id = parts[1]
+        idx_text = parts[2]
+        c.data = f"dist:{draft_id}:{idx_text}"
+        await cb_district(c, state)
+        return
+
+    # Старый формат d:<city_code>:<pid_or_index>:<district_idx>
+    if len(parts) == 4:
+        _, cc, value, idx_text = parts
+        city = CODE_CITIES.get(cc)
+        if not city:
+            await send_city_menu(c.message, state)
+            return
+
+        load_bot_data()
+        item = resolve_catalog_item(city, value)
+        if not item:
+            await c.answer("Товар устарел или удалён.", show_alert=True)
+            await send_products(c.message, state, city)
+            return
+
+        districts = get_city_districts(city)
+        draft_id = str(random.randint(100000, 999999))
+        ORDER_DRAFTS[draft_id] = {"city": city, "item": item, "districts": districts, "created_at": time.time()}
+        c.data = f"dist:{draft_id}:{idx_text}"
+        await cb_district(c, state)
+        return
+
+    # Очень старый формат d:<token>:<city_code>:<product_index>:<district_idx>
+    if len(parts) == 5:
+        _, _token, cc, value, idx_text = parts
+        city = CODE_CITIES.get(cc)
+        if not city:
+            await send_city_menu(c.message, state)
+            return
+
+        load_bot_data()
+        item = resolve_catalog_item(city, value)
+        if not item:
+            await c.answer("Товар устарел или удалён.", show_alert=True)
+            await send_products(c.message, state, city)
+            return
+
+        districts = get_city_districts(city)
+        draft_id = str(random.randint(100000, 999999))
+        ORDER_DRAFTS[draft_id] = {"city": city, "item": item, "districts": districts, "created_at": time.time()}
+        c.data = f"dist:{draft_id}:{idx_text}"
+        await cb_district(c, state)
+        return
+
+    await c.answer("Кнопка устарела. Выберите товар заново.", show_alert=True)
+
 @dp.callback_query(F.data.startswith("dist:"))
 async def cb_district(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
@@ -639,10 +765,13 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
         return
     city = draft["city"]
     item = draft["item"]
-    if not any(x["pid"] == item["pid"] for x in current_catalog(city)):
+    load_bot_data()
+    fresh_item = resolve_catalog_item(city, item["pid"])
+    if not fresh_item:
         await c.answer("Товар удалён. Выберите другой.", show_alert=True)
         await send_products(c.message, state, city)
         return
+    item = fresh_item
     district = draft["districts"][idx]
     order_id = random.randint(1000000, 9999999)
     btc, usdt, ton, rates = crypto_amounts(int(item["price"]))
@@ -664,6 +793,11 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "check")
 async def cb_check(c: types.CallbackQuery, state: FSMContext):
     await c.answer("⛔ По данному заказу оплата не была получена.", show_alert=True)
+
+
+@dp.callback_query()
+async def cb_unknown(c: types.CallbackQuery):
+    await c.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
 
 async def reminder(user_id: int, order_id: int):
     await asyncio.sleep(20 * 60)
