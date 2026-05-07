@@ -1,8 +1,9 @@
-﻿import asyncio
+import asyncio
 import logging
 import os
 import random
 import time
+from html import escape
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.client.default import DefaultBotProperties
@@ -66,13 +67,13 @@ EXTRA_PRODUCTS = {
 
 def city_products(city: str) -> dict:
     """5 основных товаров + 3-6 дополнительных для выбранного города."""
-    rnd = random.Random(city)
-    count = rnd.randint(3, 6)
-    extra_names = rnd.sample(list(EXTRA_PRODUCTS.keys()), count)
-
     result = dict(PRODUCTS)
-    for name in extra_names:
-        result[name] = EXTRA_PRODUCTS[name]
+    if EXTRA_PRODUCTS:
+        rnd = random.Random(city)
+        count = min(rnd.randint(3, 6), len(EXTRA_PRODUCTS))
+        extra_names = rnd.sample(list(EXTRA_PRODUCTS.keys()), count)
+        for name in extra_names:
+            result[name] = EXTRA_PRODUCTS[name]
     return result
 
 def city_keyboard():
@@ -177,12 +178,23 @@ BTC_WALLET = "bc1qexample"
 USDT_WALLET = "TXexample"
 TON_WALLET = "UQexample"
 
-BTC_RATE = 6500000
-USDT_RATE = 90
-TON_RATE = 320
+# Курсы можно менять здесь или через переменные окружения.
+# Важно: сумма в криптовалюте считается как цена_в_рублях / курс_криптовалюты_в_рублях.
+BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
+USDT_RATE = float(os.getenv("USDT_RATE", "90"))
+TON_RATE = float(os.getenv("TON_RATE", "270"))
+
+ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
+
+def fmt_amount(value: float, decimals: int) -> str:
+    """Формат без лишних нулей и без пробелов вокруг точки."""
+    return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
 
 def get_crypto_amounts(rub: int):
-    return round(rub / BTC_RATE, 6), round(rub / USDT_RATE, 2), round(rub / TON_RATE, 3)
+    btc = fmt_amount(rub / BTC_RATE, 8)
+    usdt = fmt_amount(rub / USDT_RATE, 2)
+    ton = fmt_amount(rub / TON_RATE, 3)
+    return btc, usdt, ton
 
 # =====================
 # KEYBOARDS
@@ -223,7 +235,74 @@ async def check_payment_btn(m: types.Message):
 
 @dp.message(F.text == "ℹ️ О боте")
 async def about(m: types.Message):
-    await m.answer("🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут.")
+    await m.answer(ABOUT_TEXT)
+
+@dp.message(F.text == "/help")
+async def help_cmd(m: types.Message):
+    await m.answer(
+        "📋 <b>Список команд</b>\n\n"
+        "/start — открыть главное меню\n"
+        "/help — список команд\n"
+        "/add товар цена — добавить товар, пример: <code>/add книга 500</code>\n"
+        "/del товар — удалить товар, пример: <code>/del книга</code>\n"
+        "/del all — удалить весь товар\n"
+        "/info текст — изменить сообщение кнопки «О боте»"
+    )
+
+@dp.message(F.text.startswith("/add "))
+async def add_product_cmd(m: types.Message):
+    parts = m.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>")
+        return
+
+    rest = parts[1] + " " + parts[2]
+    name, price_text = rest.rsplit(maxsplit=1)
+    if not price_text.isdigit() or int(price_text) <= 0:
+        await m.answer("❌ Цена должна быть положительным числом. Пример: <code>/add книга 500</code>")
+        return
+
+    PRODUCTS[name.strip().capitalize()] = int(price_text)
+    await m.answer(f"✅ Товар добавлен: <b>{escape(name.strip().capitalize())}</b> — <b>{int(price_text)} ₽</b>")
+
+@dp.message(F.text.startswith("/del "))
+async def del_product_cmd(m: types.Message):
+    name = m.text[5:].strip()
+    if not name:
+        await m.answer("❌ Неверный формат. Пример: <code>/del книга</code>")
+        return
+
+    if name.lower() == "all":
+        PRODUCTS.clear()
+        EXTRA_PRODUCTS.clear()
+        await m.answer("✅ Весь товар удалён.")
+        return
+
+    key = next((x for x in list(PRODUCTS.keys()) if x.lower() == name.lower()), None)
+    extra_key = next((x for x in list(EXTRA_PRODUCTS.keys()) if x.lower() == name.lower()), None)
+
+    deleted = False
+    if key:
+        PRODUCTS.pop(key, None)
+        deleted = True
+    if extra_key:
+        EXTRA_PRODUCTS.pop(extra_key, None)
+        deleted = True
+
+    if deleted:
+        await m.answer(f"✅ Товар удалён: <b>{escape(name)}</b>")
+    else:
+        await m.answer("❌ Такой товар не найден.")
+
+@dp.message(F.text.startswith("/info "))
+async def info_cmd(m: types.Message):
+    global ABOUT_TEXT
+    text = m.text[6:].strip()
+    if not text:
+        await m.answer("❌ Напишите текст после команды. Пример: <code>/info Новый текст</code>")
+        return
+    ABOUT_TEXT = text
+    await m.answer("✅ Сообщение кнопки «О боте» изменено.")
 
 # =====================
 # INLINE HANDLERS
@@ -243,6 +322,14 @@ async def back_to_cities(c: types.CallbackQuery, state: FSMContext):
 async def other_city(c: types.CallbackQuery, state: FSMContext):
     await state.set_state(S.city_name)
     await c.message.edit_text("✍️ Напишите название города в чат.")
+
+@dp.message(F.text.regexp(r"^\d+$"))
+async def order_number_from_chat(m: types.Message):
+    digits = m.text.strip()
+    if len(digits) == 7:
+        await m.answer("⛔ По данному заказу оплата не была получена, сначала оплатите и повторите запрос.")
+    elif 1 <= len(digits) <= 6 or 8 <= len(digits) <= 20:
+        await m.answer("❌ Неверный ввод, убедитесь, что вы вводите 7 цифр вашего заказа.")
 
 @dp.message(S.city_name)
 async def city_name_from_chat(m: types.Message, state: FSMContext):
@@ -356,7 +443,7 @@ async def check_payment(c: types.CallbackQuery, state: FSMContext):
     if time.time() - data.get("t", 0) > 1800:  # 30 минут
         await c.answer("⛔ Время на оплату вышло (30 минут)", show_alert=True)
         return
-    await c.answer("⛔ Оплата не найдена, оплатите товар и повторите запрос.", show_alert=True)
+    await c.answer("⛔ По данному заказу оплата не была получена, сначала оплатите и повторите запрос.", show_alert=True)
 
 # =====================
 # RUN
