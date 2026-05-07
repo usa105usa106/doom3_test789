@@ -3,6 +3,8 @@ import logging
 import os
 import random
 import time
+import json
+import urllib.request
 from html import escape
 
 from aiogram import Bot, Dispatcher, types, F
@@ -77,8 +79,10 @@ def city_products(city: str) -> dict:
     return result
 
 def city_keyboard():
+    # В меню показываются только 15 самых крупных городов.
+    # Остальные города вводятся вручную через кнопку «Другой город».
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:50]
+        [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:15]
     ])
     kb.inline_keyboard.append([InlineKeyboardButton(text="🔎 Другой город", callback_data="other_city")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
@@ -187,19 +191,21 @@ def get_city_districts(city: str) -> list[str]:
         return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
 
     rnd = random.Random(f"districts:{city}")
-    count = rnd.randint(1, min(3, len(FALLBACK_DISTRICTS)))
-    return ["Центр"] + rnd.sample(FALLBACK_DISTRICTS, count)
+    count = rnd.randint(1, 3)
+    random_districts = rnd.sample(FALLBACK_DISTRICTS, count)
+    return ["Центр"] + random_districts
 
 # WALLETS
 BTC_WALLET = "bc1qexample"
 USDT_TRC20_WALLET = "TXexample"
 TON_WALLET = "UQexample"
 
-# Курсы можно менять здесь или через переменные окружения.
-# Важно: сумма в криптовалюте считается как цена_в_рублях / курс_криптовалюты_в_рублях.
+# Резервные курсы на случай, если сервер не сможет получить актуальный курс из интернета.
+# Сумма в криптовалюте считается строго так: цена_в_рублях / курс_криптовалюты_в_рублях.
 BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
 USDT_TRC20_RATE = float(os.getenv("USDT_TRC20_RATE", "90"))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
+_rates_cache = {"ts": 0, "rates": None}
 
 ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
 
@@ -207,10 +213,36 @@ def fmt_amount(value: float, decimals: int) -> str:
     """Формат без лишних нулей и без пробелов вокруг точки."""
     return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
 
+def get_live_rates() -> dict:
+    """Получает актуальные курсы BTC/USDT/TON к RUB. При ошибке использует резервные курсы."""
+    now = time.time()
+    if _rates_cache["rates"] and now - _rates_cache["ts"] < 300:
+        return _rates_cache["rates"]
+
+    fallback = {"btc": BTC_RATE, "usdt": USDT_TRC20_RATE, "ton": TON_RATE}
+    url = (
+        "https://api.coingecko.com/api/v3/simple/price"
+        "?ids=bitcoin,tether,the-open-network&vs_currencies=rub"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        rates = {
+            "btc": float(data["bitcoin"]["rub"]),
+            "usdt": float(data["tether"]["rub"]),
+            "ton": float(data["the-open-network"]["rub"]),
+        }
+        _rates_cache.update({"ts": now, "rates": rates})
+        return rates
+    except Exception as e:
+        logging.warning("Не удалось получить актуальные курсы, используются резервные: %s", e)
+        return fallback
+
 def get_crypto_amounts(rub: int):
-    btc = fmt_amount(rub / BTC_RATE, 8)
-    usdt = fmt_amount(rub / USDT_TRC20_RATE, 2)
-    ton = fmt_amount(rub / TON_RATE, 3)
+    rates = get_live_rates()
+    btc = fmt_amount(rub / rates["btc"], 8)
+    usdt = fmt_amount(rub / rates["usdt"], 2)
+    ton = fmt_amount(rub / rates["ton"], 3)
     return btc, usdt, ton
 
 # =====================
@@ -390,8 +422,9 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
         await c.answer("Товар недоступен для этого города", show_alert=True)
         return
 
-    await state.update_data(product=product, price=products[product])
     districts = get_city_districts(city)
+    # Запоминаем выбранный товар и список районов до окончания брони.
+    await state.update_data(product=product, price=products[product], districts=districts)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=d, callback_data=f"d_{d}")] for d in districts
