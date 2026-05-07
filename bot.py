@@ -27,17 +27,48 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
-# ID администраторов через запятую в переменной окружения ADMIN_IDS, например:
-# ADMIN_IDS=123456789,987654321
-ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()}
+# =====================
+# ADMIN CONFIG
+# =====================
+# Можно указать админов двумя способами:
+# 1) через переменную окружения ADMIN_IDS=123456789,987654321
+# 2) прямо в коде: HARD_ADMIN_IDS = [123456789]
+# Бот также понимает ADMIN_ID, admin_ids и даже amdin_ids, если переменная была названа с опечаткой.
+
+HARD_ADMIN_IDS: list[int] = []
+
+def _load_admin_ids() -> set[int]:
+    raw_values = [
+        os.getenv("ADMIN_IDS", ""),
+        os.getenv("ADMIN_ID", ""),
+        os.getenv("admin_ids", ""),
+        os.getenv("admin_id", ""),
+        os.getenv("amdin_ids", ""),
+        os.getenv("AMDIN_IDS", ""),
+        os.getenv("ADMINS", ""),
+    ]
+    ids: set[int] = set(HARD_ADMIN_IDS)
+    for raw in raw_values:
+        for part in raw.replace(";", ",").replace(" ", ",").split(","):
+            part = part.strip()
+            if part.isdigit():
+                ids.add(int(part))
+    return ids
+
+ADMIN_IDS = _load_admin_ids()
 
 def is_admin(user_id: int | None) -> bool:
-    return bool(user_id and user_id in ADMIN_IDS)
+    return user_id is not None and int(user_id) in ADMIN_IDS
 
 async def admin_only(m: types.Message) -> bool:
-    if is_admin(m.from_user.id if m.from_user else None):
+    user_id = m.from_user.id if m.from_user else None
+    if is_admin(user_id):
         return True
-    await m.answer("⛔ Эта команда доступна только администратору бота.")
+    await m.answer(
+        "⛔ Эта команда доступна только администратору бота.\n"
+        f"Ваш Telegram ID: <code>{user_id}</code>\n"
+        "Добавьте его в переменную <code>ADMIN_IDS</code> и перезапустите бота."
+    )
     return False
 
 # =====================
