@@ -82,7 +82,6 @@ def _load_admin_ids() -> set[int]:
 
 ADMIN_IDS = _load_admin_ids()
 AUTO_ADMIN_FILE = "admin_ids.json"
-DATA_SAVE_FILE = "bot_saved_data.json"
 
 def _save_admin_ids() -> None:
     try:
@@ -352,49 +351,6 @@ _rates_cache = {"ts": 0, "rates": None}
 
 ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
 
-def save_bot_data() -> None:
-    """Сохраняет все настройки, изменённые командами админа."""
-    data = {
-        "products": PRODUCTS,
-        "extra_products": EXTRA_PRODUCTS,
-        "wallets": WALLETS,
-        "about_text": ABOUT_TEXT,
-    }
-    with open(DATA_SAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def load_bot_data() -> bool:
-    """Загружает последние сохранённые настройки. Возвращает True, если файл найден."""
-    global ABOUT_TEXT
-
-    if not os.path.exists(DATA_SAVE_FILE):
-        return False
-
-    with open(DATA_SAVE_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    PRODUCTS.clear()
-    PRODUCTS.update({str(k): int(v) for k, v in data.get("products", {}).items()})
-
-    EXTRA_PRODUCTS.clear()
-    EXTRA_PRODUCTS.update({str(k): int(v) for k, v in data.get("extra_products", {}).items()})
-
-    saved_wallets = data.get("wallets", {})
-    for key in WALLETS:
-        value = saved_wallets.get(key, [])
-        if isinstance(value, str):
-            value = [value] if value else []
-        WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
-
-    ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
-    return True
-
-
-try:
-    load_bot_data()
-except Exception as e:
-    logging.warning("Could not auto-load saved bot data: %s", e)
-
 def fmt_amount(value: float, decimals: int) -> str:
     """Формат без лишних нулей и без пробелов вокруг точки."""
     return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
@@ -508,34 +464,8 @@ async def help_cmd(m: types.Message):
         "/cash usdt — задать USDT-(TRC20) кошелёк\n"
         "/cash ton — задать TON кошелёк\n"
         "/cash del btc|usdt|ton — удалить выбранный кошелёк\n"
-        "/cash del all — удалить все кошельки\n"
-        "/save — сохранить все текущие изменения\n"
-        "/load — загрузить последние сохранённые значения"
+        "/cash del all — удалить все кошельки"
     )
-
-@dp.message(F.text.regexp(r"^/save(@\w+)?$"))
-async def save_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    try:
-        save_bot_data()
-        await m.answer("✅ Все изменения сохранены.")
-    except Exception as e:
-        logging.exception("Save failed")
-        await m.answer(f"❌ Не удалось сохранить данные: <code>{escape(str(e))}</code>")
-
-@dp.message(F.text.regexp(r"^/load(@\w+)?$"))
-async def load_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    try:
-        if not load_bot_data():
-            await m.answer("❌ Сохранение не найдено. Сначала используйте /save.")
-            return
-        await m.answer("✅ Последние сохранённые значения загружены.")
-    except Exception as e:
-        logging.exception("Load failed")
-        await m.answer(f"❌ Не удалось загрузить данные: <code>{escape(str(e))}</code>")
 
 @dp.message(F.text.regexp(r"^/add(@\w+)?(\s|$)"))
 async def add_product_cmd(m: types.Message):
