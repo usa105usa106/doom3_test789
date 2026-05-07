@@ -32,6 +32,7 @@ class S(StatesGroup):
     city = State()
     product = State()
     district = State()
+    city_name = State()
 
 # =====================
 # DATA
@@ -44,6 +45,56 @@ PRODUCTS = {
     "Плед": 1800,
     "Шарф": 900
 }
+
+# Дополнительные товары.
+# Для каждого города к 5 основным товарам добавляется случайный набор
+# от 3 до 6 товаров. Набор стабилен для одного и того же города.
+EXTRA_PRODUCTS = {
+    "Рюкзак": 2200,
+    "Кепка": 700,
+    "Носки": 350,
+    "Куртка": 5200,
+    "Джинсы": 2800,
+    "Перчатки": 650,
+    "Очки": 1100,
+    "Пояс": 800,
+    "Сумка": 1900,
+    "Кошелёк": 1200,
+    "Поло": 1500,
+    "Брюки": 2400,
+}
+
+def city_products(city: str) -> dict:
+    """5 основных товаров + 3-6 дополнительных для выбранного города."""
+    rnd = random.Random(city)
+    count = rnd.randint(3, 6)
+    extra_names = rnd.sample(list(EXTRA_PRODUCTS.keys()), count)
+
+    result = dict(PRODUCTS)
+    for name in extra_names:
+        result[name] = EXTRA_PRODUCTS[name]
+    return result
+
+def city_keyboard():
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:15]
+    ])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔎 Другой город", callback_data="other_city")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
+    return kb
+
+def products_keyboard(city: str):
+    products = city_products(city)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{p} — {price} ₽", callback_data=f"p_{p}")]
+        for p, price in products.items()
+    ])
+    kb.inline_keyboard.append([
+        InlineKeyboardButton(text="🔙 Города", callback_data="city"),
+        InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
+    ])
+    return kb
+
 
 ALL_CITIES = [
     "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань",
@@ -158,12 +209,9 @@ async def start(m: types.Message):
 # =====================
 
 @dp.message(F.text == "🏙 Выбрать город")
-async def choose_city_btn(m: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:12]
-    ])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
-    await m.answer("🏙 Выберите город:", reply_markup=kb)
+async def choose_city_btn(m: types.Message, state: FSMContext):
+    await state.clear()
+    await m.answer("🏙 Выберите город:", reply_markup=city_keyboard())
 
 @dp.message(F.text == "📦 Мой заказ")
 async def my_order(m: types.Message):
@@ -186,30 +234,54 @@ async def menu(c: types.CallbackQuery):
     await c.message.edit_text("🏪 Главное меню", reply_markup=None)
     await c.message.answer("Выберите действие:", reply_markup=main_kb())
 
+@dp.callback_query(F.data == "city")
+async def back_to_cities(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(S.city)
+    await c.message.edit_text("🏙 Выберите город:", reply_markup=city_keyboard())
+
+@dp.callback_query(F.data == "other_city")
+async def other_city(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(S.city_name)
+    await c.message.edit_text("✍️ Напишите название города в чат.")
+
+@dp.message(S.city_name)
+async def city_name_from_chat(m: types.Message, state: FSMContext):
+    city = m.text.strip()
+    matches = [x for x in ALL_CITIES if x.lower() == city.lower()]
+    if not matches:
+        await m.answer("Город не найден. Напишите название ещё раз или нажмите «🏙 Выбрать город».")
+        return
+
+    city = matches[0]
+    await state.update_data(city=city)
+    await state.set_state(S.product)
+    await m.answer(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+
 # 1. ГОРОД
 @dp.callback_query(F.data.startswith("c_"))
 async def city_selected(c: types.CallbackQuery, state: FSMContext):
     city = c.data[2:]
     await state.update_data(city=city)
+    await state.set_state(S.product)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=p, callback_data=f"p_{p}")] for p in PRODUCTS.keys()
-    ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="🔙 Города", callback_data="city"),
-        InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
-    ])
-
-    await c.message.edit_text(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=kb)
+    await c.message.edit_text(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
 
 # 2. ТОВАР
 @dp.callback_query(F.data.startswith("p_"))
 async def product_selected(c: types.CallbackQuery, state: FSMContext):
     product = c.data[2:]
-    await state.update_data(product=product, price=PRODUCTS[product])
-
     data = await state.get_data()
-    city = data['city']
+    city = data.get('city')
+    if not city:
+        await c.answer("Сначала выберите город", show_alert=True)
+        return
+
+    products = city_products(city)
+    if product not in products:
+        await c.answer("Товар недоступен для этого города", show_alert=True)
+        return
+
+    await state.update_data(product=product, price=products[product])
     districts = LOCATIONS.get(city, ["Центр", "Район 1", "Район 2"])
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -221,6 +293,15 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
     ])
 
     await c.message.edit_text(f"📍 {city}\n🛍 Товар: <b>{product}</b>\n\nВыберите район:", reply_markup=kb)
+
+@dp.callback_query(F.data == "back_products")
+async def back_products(c: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    city = data.get("city")
+    if not city:
+        await c.message.edit_text("🏙 Сначала выберите город:", reply_markup=city_keyboard())
+        return
+    await c.message.edit_text(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
 
 # 3. РАЙОН → ОПЛАТА
 @dp.callback_query(F.data.startswith("d_"))
