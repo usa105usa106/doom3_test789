@@ -4,7 +4,6 @@ import logging
 import os
 import random
 import re
-import resource
 import sqlite3
 import time
 import urllib.request
@@ -53,7 +52,6 @@ USDT_RATE = float(os.getenv("USDT_RATE", os.getenv("USDT_TRC20_RATE", "90")))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
 USE_LIVE_RATES = os.getenv("USE_LIVE_RATES", "1").strip() != "0"
 _rates_cache = {"ts": 0.0, "rates": None}
-BOT_START_TIME = time.time()
 INSTANCE_ID = str(uuid.uuid4())
 
 ALL_CITIES = [
@@ -572,33 +570,6 @@ def crypto_amounts(rub: int):
         rates,
     )
 
-
-def format_uptime(seconds: float) -> str:
-    seconds = int(seconds)
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    parts = []
-    if days:
-        parts.append(f"{days} д")
-    if hours:
-        parts.append(f"{hours} ч")
-    if minutes:
-        parts.append(f"{minutes} мин")
-    parts.append(f"{seconds} сек")
-    return " ".join(parts)
-
-def get_memory_mb() -> float:
-    """
-    ru_maxrss на Linux возвращает KB, на macOS bytes.
-    Railway/Linux => KB.
-    """
-    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    if usage > 10_000_000:  # похоже на bytes
-        return usage / 1024 / 1024
-    return usage / 1024
-
-
 def main_kb():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
         [KeyboardButton(text="🏙 Выбрать город")],
@@ -681,7 +652,7 @@ async def help_cmd(m: types.Message):
     await m.answer(
         "/add товар цена — добавить\n/add info — список\n/del all — удалить всё\n"
         "/cash btc адрес — добавить BTC\n/cash usdt адрес — добавить USDT\n/cash ton адрес — добавить TON\n"
-        "/cash info — кошельки\n/rates — курсы\n/ping — отклик, память, время работы\n/debug — проверка"
+        "/cash info — кошельки\n/rates — курсы\n/debug — проверка"
     )
 
 @dp.message(Command("debug"))
@@ -693,35 +664,6 @@ async def debug_cmd(m: types.Message):
         f"Основные: <b>{mcnt}</b>\nДополнительные: <b>{ecnt}</b>\n"
         f"BTC/USDT/TON кошельки: <b>{len(get_wallets('btc'))}/{len(get_wallets('usdt'))}/{len(get_wallets('ton'))}</b>\n"
         f"Городов в списке: <b>{len(ALL_CITIES)}</b>"
-    )
-
-
-@dp.message(Command("ping"))
-async def ping_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-
-    start = time.perf_counter()
-
-    # Быстрая проверка SQLite, чтобы отклик был реальным, а не просто ответ Python.
-    try:
-        with db() as con:
-            con.execute("SELECT 1").fetchone()
-        db_status = "OK"
-    except Exception as e:
-        db_status = f"ошибка: {escape(str(e))}"
-
-    latency_ms = (time.perf_counter() - start) * 1000
-    memory_mb = get_memory_mb()
-    uptime = format_uptime(time.time() - BOT_START_TIME)
-
-    await m.answer(
-        "🏓 <b>Pong</b>\n\n"
-        f"⏱ Время отклика: <b>{latency_ms:.2f} мс</b>\n"
-        f"🧠 Memory: <b>{memory_mb:.2f} MB</b>\n"
-        f"🕒 Работает: <b>{uptime}</b>\n"
-        f"🗄 SQLite: <b>{db_status}</b>\n"
-        f"🆔 Instance: <code>{INSTANCE_ID[:8]}</code>"
     )
 
 @dp.message(Command("rates"))
@@ -776,7 +718,7 @@ async def del_cmd(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer(f"✅ Удалено: <b>{escape(arg)}</b>" if ok else "❌ Такой товар не найден.")
 
-@dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
+@dp.message(Command("cash"))
 async def cash_cmd(m: types.Message, state: FSMContext):
     if not await admin_only(m): return
     args = command_args(m.text)
@@ -805,12 +747,15 @@ async def cash_cmd(m: types.Message, state: FSMContext):
         await m.answer("❌ Формат: /cash btc адрес, /cash usdt адрес, /cash ton адрес")
         return
     if len(parts) > 1 and parts[1].strip():
-        add_wallet(action, parts[1].strip())
+        address = parts[1].strip()
+        add_wallet(action, address)
         await state.clear()
         await m.answer(
             f"✅ Кошелёк {WALLET_TITLES[action]} добавлен. Всего: <b>{len(get_wallets(action))}</b>\n"
             f"{wallets_text(action)}"
         )
+        # Дополнительное короткое сообщение опускает чат вниз после команды.
+        await m.answer("⬇️ Сохранено. Можно проверить командой /cash info")
         return
     await state.update_data(cash_type=action)
     await state.set_state(S.cash_wallet)
@@ -864,7 +809,11 @@ async def cash_wallet_input(m: types.Message, state: FSMContext):
         return
     add_wallet(t, wallet)
     await state.clear()
-    await m.answer(f"✅ Кошелёк {WALLET_TITLES[t]} добавлен. Всего: <b>{len(get_wallets(t))}</b>")
+    await m.answer(
+        f"✅ Кошелёк {WALLET_TITLES[t]} добавлен. Всего: <b>{len(get_wallets(t))}</b>\n"
+        f"{wallets_text(t)}"
+    )
+    await m.answer("⬇️ Сохранено. Можно проверить командой /cash info")
 
 @dp.message(S.city_name)
 async def city_name_input(m: types.Message, state: FSMContext):
