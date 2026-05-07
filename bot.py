@@ -107,7 +107,7 @@ ALL_CITIES = [
 "Урюпинск","Котельниково","Калач-на-Дону","Палласовка","Дубовка","Ахтубинск","Знаменск","Харабали","Камызяк","Нариманов",
 "Вольск","Балашов","Маркс","Пугачёв","Ртищево","Аткарск","Петровск","Хвалынск","Ершов","Новоузенск","Красноармейск"
 ]
-ALL_CITIES = list(dict.fromkeys(ALL_CITIES))
+ALL_CITIES = list(dict.fromkeys(ALL_CITIES))[:300]
 CITY_CODES = {city: str(i) for i, city in enumerate(ALL_CITIES)}
 CODE_CITIES = {str(i): city for i, city in enumerate(ALL_CITIES)}
 TOP_CITIES = set(ALL_CITIES[:50])
@@ -129,8 +129,47 @@ LOCATIONS = {
     "Пермь": ["Ленинский", "Свердловский", "Индустриальный", "Мотовилихинский", "Орджоникидзевский"],
     "Волгоград": ["Центральный", "Дзержинский", "Краснооктябрьский", "Ворошиловский", "Тракторозаводский"],
 }
-FALLBACK_DISTRICTS = ["Центр", "Автовокзал", "ЖД/вокзал", "Любой район", "Ленинский", "Советский", "Октябрьский", "Центральный"]
+# Для городов после 50-го места показываем только 2-4 случайных варианта из этого списка.
+FALLBACK_DISTRICTS = ["Центр", "Автовокзал", "ЖД/вокзал", "Любой район"]
 GENERIC_TOP_DISTRICTS = ["Центр", "Ленинский", "Советский", "Октябрьский", "Центральный"]
+
+# Районы для первых 50 крупнейших городов.
+LOCATIONS.update({
+    "Краснодар": ["Центральный", "Западный", "Карасунский", "Прикубанский", "Фестивальный"],
+    "Саратов": ["Волжский", "Кировский", "Ленинский", "Октябрьский", "Фрунзенский"],
+    "Тюмень": ["Центральный", "Ленинский", "Калининский", "Восточный", "Заречный"],
+    "Тольятти": ["Автозаводский", "Центральный", "Комсомольский", "Новый город", "Старый город"],
+    "Ижевск": ["Октябрьский", "Индустриальный", "Ленинский", "Первомайский", "Устиновский"],
+    "Барнаул": ["Центральный", "Индустриальный", "Ленинский", "Октябрьский", "Железнодорожный"],
+    "Ульяновск": ["Ленинский", "Засвияжский", "Заволжский", "Железнодорожный", "Центр"],
+    "Иркутск": ["Правобережный", "Октябрьский", "Свердловский", "Ленинский", "Центр"],
+    "Хабаровск": ["Центральный", "Индустриальный", "Железнодорожный", "Кировский", "Краснофлотский"],
+    "Ярославль": ["Кировский", "Ленинский", "Фрунзенский", "Красноперекопский", "Дзержинский"],
+    "Владивосток": ["Фрунзенский", "Ленинский", "Первомайский", "Первореченский", "Советский"],
+    "Махачкала": ["Советский", "Ленинский", "Кировский", "Редукторный", "Центр"],
+    "Томск": ["Советский", "Кировский", "Ленинский", "Октябрьский", "Центр"],
+    "Оренбург": ["Центральный", "Ленинский", "Промышленный", "Дзержинский", "Степной"],
+    "Кемерово": ["Центральный", "Ленинский", "Заводский", "Кировский", "Рудничный"],
+    "Новокузнецк": ["Центральный", "Кузнецкий", "Куйбышевский", "Орджоникидзевский", "Заводской"],
+    "Рязань": ["Советский", "Железнодорожный", "Московский", "Октябрьский", "Центр"],
+    "Астрахань": ["Кировский", "Ленинский", "Советский", "Трусовский", "Центр"],
+    "Пенза": ["Ленинский", "Октябрьский", "Первомайский", "Железнодорожный", "Арбеково"],
+    "Липецк": ["Советский", "Октябрьский", "Правобережный", "Левобережный", "Центр"],
+    "Киров": ["Ленинский", "Октябрьский", "Первомайский", "Нововятский", "Центр"],
+    "Чебоксары": ["Ленинский", "Московский", "Калининский", "Северо-Западный", "Новоюжный"],
+    "Брянск": ["Советский", "Бежицкий", "Фокинский", "Володарский", "Центр"],
+    "Тула": ["Центральный", "Советский", "Пролетарский", "Зареченский", "Привокзальный"],
+    "Курск": ["Центральный", "Сеймский", "Железнодорожный", "Северо-Западный", "КЗТЗ"],
+    "Ставрополь": ["Ленинский", "Октябрьский", "Промышленный", "Центр", "Перспективный"],
+    "Улан-Удэ": ["Советский", "Железнодорожный", "Октябрьский", "Центр", "Восточный"],
+    "Тверь": ["Центральный", "Московский", "Пролетарский", "Заволжский", "Южный"],
+    "Магнитогорск": ["Правобережный", "Ленинский", "Орджоникидзевский", "Центр", "Новый город"],
+    "Сочи": ["Центральный", "Адлерский", "Хостинский", "Лазаревский", "Мамайка"],
+    "Иваново": ["Ленинский", "Советский", "Октябрьский", "Фрунзенский", "Центр"],
+    "Белгород": ["Западный", "Восточный", "Центр", "Харьковская гора", "Крейда"],
+    "Архангельск": ["Октябрьский", "Ломоносовский", "Соломбальский", "Майская Горка", "Варавино-Фактория"],
+    "Калининград": ["Ленинградский", "Московский", "Центральный", "Амалиенау", "Сельма"],
+})
 
 class S(StatesGroup):
     city_name = State()
@@ -176,6 +215,13 @@ def init_db():
             CREATE TABLE IF NOT EXISTS processed(
                 key TEXT PRIMARY KEY,
                 created_at REAL NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS users(
+                user_id INTEGER PRIMARY KEY,
+                first_seen REAL NOT NULL,
+                last_seen REAL NOT NULL
             )
         """)
         con.commit()
@@ -238,8 +284,32 @@ def processed_once(key: str) -> bool:
     except Exception:
         return True
 
+def touch_user(user_id: int | None):
+    if not user_id:
+        return
+    now = time.time()
+    try:
+        with db() as con:
+            con.execute(
+                "INSERT INTO users(user_id, first_seen, last_seen) VALUES(?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET last_seen=excluded.last_seen",
+                (int(user_id), now, now),
+            )
+            con.commit()
+    except Exception as e:
+        logging.warning("touch_user failed: %s", e)
+
+def users_count() -> int:
+    try:
+        with db() as con:
+            row = con.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()
+        return int(row["cnt"] if row else 0)
+    except Exception:
+        return 0
+
 @dp.message.outer_middleware()
 async def dedupe_messages(handler, event: types.Message, data: dict):
+    touch_user(event.from_user.id if event.from_user else None)
     key = f"m:{event.chat.id}:{event.message_id}"
     if not processed_once(key):
         return
@@ -247,6 +317,7 @@ async def dedupe_messages(handler, event: types.Message, data: dict):
 
 @dp.callback_query.outer_middleware()
 async def dedupe_callbacks(handler, event: types.CallbackQuery, data: dict):
+    touch_user(event.from_user.id if event.from_user else None)
     key = f"c:{event.id}"
     if not processed_once(key):
         try:
@@ -361,18 +432,27 @@ def compact_product_callback(prefix: str, cc: str, item: dict, district_idx: int
 
 def current_catalog(city: str):
     rows = all_products()
-    mains = [r for r in rows if r["group_name"] == "main"][:5]
-    extras = [r for r in rows if r["group_name"] == "extra"]
-    selected = []
-    if extras:
-        if len(extras) <= 6:
-            selected = extras
-        else:
-            seed = city + "|" + "|".join(f"{r['name']}:{r['price']}" for r in extras)
-            rnd = random.Random(seed)
-            selected = rnd.sample(extras, rnd.randint(3, 6))
+    mains_all = [r for r in rows if r["group_name"] == "main"]
+    extras_all = [r for r in rows if r["group_name"] == "extra"]
+
+    city_index = ALL_CITIES.index(city) if city in ALL_CITIES else 999
+    seed = city + "|" + "|".join(f"{r['group_name']}:{r['name']}:{r['price']}" for r in rows)
+    rnd = random.Random(seed)
+
+    if city_index < 50:
+        # Первые 50 городов: все основные + рандом 3-6 дополнительных.
+        mains = mains_all
+        extra_count = rnd.randint(3, 6) if extras_all else 0
+    else:
+        # Города 51-300: рандом 1-2 основных + рандом 2-4 дополнительных.
+        main_count = rnd.randint(1, 2) if mains_all else 0
+        mains = rnd.sample(mains_all, min(main_count, len(mains_all))) if mains_all else []
+        extra_count = rnd.randint(2, 4) if extras_all else 0
+
+    extras = rnd.sample(extras_all, min(extra_count, len(extras_all))) if extras_all else []
+
     out = []
-    for r in mains + selected:
+    for r in mains + extras:
         out.append({
             "pid": product_pid(r["name"], r["group_name"]),
             "name": r["name"],
@@ -526,7 +606,8 @@ def migrate_json_to_sqlite_once():
 migrate_json_to_sqlite_once()
 
 def get_districts(city: str, pid: str) -> list[str]:
-    if city in TOP_CITIES:
+    city_index = ALL_CITIES.index(city) if city in ALL_CITIES else 999
+    if city_index < 50:
         return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
     rnd = random.Random(f"{city}:{pid}")
     return rnd.sample(FALLBACK_DISTRICTS, rnd.randint(2, 4))
@@ -715,6 +796,7 @@ async def ping_cmd(m: types.Message):
             f"⏱ Время отклика: <b>{latency_ms:.2f} мс</b>\n"
             f"🧠 Memory: <b>{memory_mb:.2f} MB</b>\n"
             f"🕒 Работает: <b>{uptime}</b>\n"
+            f"👥 Пользователей: <b>{users_count()}</b>\n"
             f"🗄 SQLite: <b>{db_status}</b>\n"
             f"🆔 Instance: <code>{INSTANCE_ID[:8]}</code>"
         )
