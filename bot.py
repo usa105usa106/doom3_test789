@@ -15,6 +15,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
+from aiogram.types import ErrorEvent
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -691,31 +692,38 @@ async def help_cmd(m: types.Message):
     )
 
 
-@dp.message(Command("ping"))
+@dp.message(F.text.regexp(r"^/ping(@\w+)?(\s|$)"))
 async def ping_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-
-    start = time.perf_counter()
     try:
-        with db() as con:
-            con.execute("SELECT 1").fetchone()
-        db_status = "OK"
+        if not await admin_only(m):
+            return
+
+        start = time.perf_counter()
+        try:
+            with db() as con:
+                con.execute("SELECT 1").fetchone()
+            db_status = "OK"
+        except Exception as e:
+            db_status = f"ошибка: {escape(str(e))}"
+
+        latency_ms = (time.perf_counter() - start) * 1000
+        memory_mb = get_memory_mb()
+        uptime = format_uptime(time.time() - BOT_START_TIME)
+
+        await m.answer(
+            "🏓 <b>Pong</b>\n\n"
+            f"⏱ Время отклика: <b>{latency_ms:.2f} мс</b>\n"
+            f"🧠 Memory: <b>{memory_mb:.2f} MB</b>\n"
+            f"🕒 Работает: <b>{uptime}</b>\n"
+            f"🗄 SQLite: <b>{db_status}</b>\n"
+            f"🆔 Instance: <code>{INSTANCE_ID[:8]}</code>"
+        )
     except Exception as e:
-        db_status = f"ошибка: {escape(str(e))}"
-
-    latency_ms = (time.perf_counter() - start) * 1000
-    memory_mb = get_memory_mb() if "get_memory_mb" in globals() else 0
-    uptime = format_uptime(time.time() - BOT_START_TIME) if "format_uptime" in globals() else f"{int(time.time() - BOT_START_TIME)} сек"
-
-    await m.answer(
-        "🏓 <b>Pong</b>\n\n"
-        f"⏱ Время отклика: <b>{latency_ms:.2f} мс</b>\n"
-        f"🧠 Memory: <b>{memory_mb:.2f} MB</b>\n"
-        f"🕒 Работает: <b>{uptime}</b>\n"
-        f"🗄 SQLite: <b>{db_status}</b>\n"
-        f"🆔 Instance: <code>{INSTANCE_ID[:8]}</code>"
-    )
+        logging.exception("/ping failed")
+        try:
+            await m.answer(f"❌ Ошибка /ping: <code>{escape(str(e))}</code>")
+        except Exception:
+            pass
 
 @dp.message(Command("debug"))
 async def debug_cmd(m: types.Message):
@@ -780,48 +788,55 @@ async def del_cmd(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer(f"✅ Удалено: <b>{escape(arg)}</b>" if ok else "❌ Такой товар не найден.")
 
-@dp.message(Command("cash"))
+@dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
 async def cash_cmd(m: types.Message, state: FSMContext):
-    if not await admin_only(m): return
-    args = command_args(m.text)
-    parts = args.split(maxsplit=1)
-    if not parts or parts[0].lower() == "info":
-        await m.answer(
-            f"💳 <b>Кошельки</b>\n\n"
-            f"BTC ({len(get_wallets('btc'))}):\n{wallets_text('btc')}\n\n"
-            f"USDT ({len(get_wallets('usdt'))}):\n{wallets_text('usdt')}\n\n"
-            f"TON ({len(get_wallets('ton'))}):\n{wallets_text('ton')}"
-        )
-        return
-    action = parts[0].lower()
-    if action == "del":
-        target = parts[1].lower().strip() if len(parts) > 1 else ""
-        if target == "all":
-            clear_wallets(None)
-        elif target in WALLETS:
-            clear_wallets(target)
-        else:
-            await m.answer("❌ /cash del btc|usdt|ton|all")
+    try:
+        if not await admin_only(m): return
+        args = command_args(m.text)
+        parts = args.split(maxsplit=1)
+        if not parts or parts[0].lower() == "info":
+            await m.answer(
+                f"💳 <b>Кошельки</b>\n\n"
+                f"BTC ({len(get_wallets('btc'))}):\n{wallets_text('btc')}\n\n"
+                f"USDT ({len(get_wallets('usdt'))}):\n{wallets_text('usdt')}\n\n"
+                f"TON ({len(get_wallets('ton'))}):\n{wallets_text('ton')}"
+            )
             return
-        await m.answer("✅ Кошельки удалены.")
-        return
-    if action not in WALLETS:
-        await m.answer("❌ Формат: /cash btc адрес, /cash usdt адрес, /cash ton адрес")
-        return
-    if len(parts) > 1 and parts[1].strip():
-        address = parts[1].strip()
-        add_wallet(action, address)
-        await state.clear()
-        await m.answer(
-            f"✅ Кошелёк {WALLET_TITLES[action]} добавлен. Всего: <b>{len(get_wallets(action))}</b>\n"
-            f"{wallets_text(action)}"
-        )
-        # Дополнительное короткое сообщение опускает чат вниз после команды.
-        await m.answer("⬇️ Сохранено. Можно проверить командой /cash info")
-        return
-    await state.update_data(cash_type=action)
-    await state.set_state(S.cash_wallet)
-    await m.answer(f"✍️ Отправьте адрес кошелька {WALLET_TITLES[action]}.")
+        action = parts[0].lower()
+        if action == "del":
+            target = parts[1].lower().strip() if len(parts) > 1 else ""
+            if target == "all":
+                clear_wallets(None)
+            elif target in WALLETS:
+                clear_wallets(target)
+            else:
+                await m.answer("❌ /cash del btc|usdt|ton|all")
+                return
+            await m.answer("✅ Кошельки удалены.")
+            return
+        if action not in WALLETS:
+            await m.answer("❌ Формат: /cash btc адрес, /cash usdt адрес, /cash ton адрес")
+            return
+        if len(parts) > 1 and parts[1].strip():
+            address = parts[1].strip()
+            add_wallet(action, address)
+            await state.clear()
+            await m.answer(
+                f"✅ Кошелёк {WALLET_TITLES[action]} добавлен. Всего: <b>{len(get_wallets(action))}</b>\n"
+                f"{wallets_text(action)}"
+            )
+            # Дополнительное короткое сообщение опускает чат вниз после команды.
+            await m.answer("⬇️ Сохранено. Можно проверить командой /cash info")
+            return
+        await state.update_data(cash_type=action)
+        await state.set_state(S.cash_wallet)
+        await m.answer(f"✍️ Отправьте адрес кошелька {WALLET_TITLES[action]}.")
+    except Exception as e:
+        logging.exception("/cash failed")
+        try:
+            await m.answer(f"❌ Ошибка /cash: <code>{escape(str(e))}</code>")
+        except Exception:
+            pass
 
 @dp.message(F.text.regexp(r"^/info(@\w+)?\s+"))
 async def info_cmd(m: types.Message):
