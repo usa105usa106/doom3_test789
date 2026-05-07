@@ -109,6 +109,7 @@ class S(StatesGroup):
 # Старый товар больше не грузится из кода. Товары появляются только после /add или /load.
 PRODUCTS: dict[str, int] = {}
 EXTRA_PRODUCTS: dict[str, int] = {}
+CATALOG_REVISION = 1
 
 WALLETS = {"btc": [], "usdt": [], "ton": []}
 WALLET_TITLES = {"btc": "BTC", "usdt": "USDT-(TRC20)", "ton": "TON"}
@@ -201,6 +202,32 @@ def normalize_wallets() -> None:
         else:
             WALLETS[k] = [str(x).strip() for x in v if str(x).strip()]
 
+def bump_catalog_revision() -> None:
+    global CATALOG_REVISION
+    CATALOG_REVISION += 1
+
+def save_empty_catalog() -> None:
+    """Жёстко сохраняет пустой каталог во все возможные файлы сохранения."""
+    normalize_wallets()
+    data = {
+        "products": {},
+        "extra_products": {},
+        "wallets": WALLETS,
+        "about_text": ABOUT_TEXT,
+        "shop_initialized": True,
+        "catalog_revision": CATALOG_REVISION,
+        "catalog_was_cleared": True,
+    }
+    for path in set([DATA_SAVE_FILE, LOCAL_SAVE_FILE, "/data/bot_saved_data.json", "bot_saved_data.json"]):
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.warning("Could not save empty catalog %s: %s", path, e)
+
 def save_bot_data() -> None:
     normalize_wallets()
     data = {
@@ -209,6 +236,8 @@ def save_bot_data() -> None:
         "wallets": WALLETS,
         "about_text": ABOUT_TEXT,
         "shop_initialized": True,
+        "catalog_revision": CATALOG_REVISION,
+        "catalog_was_cleared": not bool(PRODUCTS or EXTRA_PRODUCTS),
     }
     for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE]:
         try:
@@ -221,7 +250,7 @@ def save_bot_data() -> None:
             logging.warning("Could not save %s: %s", path, e)
 
 def load_bot_data() -> bool:
-    global ABOUT_TEXT
+    global ABOUT_TEXT, CATALOG_REVISION
     for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE]:
         if not os.path.exists(path):
             continue
@@ -242,7 +271,8 @@ def load_bot_data() -> bool:
             WALLETS[k] = [str(x).strip() for x in v if str(x).strip()]
 
         ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
-        logging.info("Loaded %s products=%s extra=%s", path, len(PRODUCTS), len(EXTRA_PRODUCTS))
+        CATALOG_REVISION = int(data.get("catalog_revision", CATALOG_REVISION))
+        logging.info("Loaded %s products=%s extra=%s rev=%s", path, len(PRODUCTS), len(EXTRA_PRODUCTS), CATALOG_REVISION)
         return True
 
     return False
@@ -403,9 +433,10 @@ def products_keyboard(city: str):
     rows.append([InlineKeyboardButton(text="🔙 Города", callback_data="city"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def districts_keyboard(districts: list[str], token: str):
+def districts_keyboard(city: str, districts: list[str], token: str):
+    cc = CITY_CODES.get(city, "x")
     rows = [[InlineKeyboardButton(text=d, callback_data=f"d:{token}:{i}")] for i, d in enumerate(districts)]
-    rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data="back_products"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
+    rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_products:{cc}"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def payment_keyboard():
@@ -495,6 +526,7 @@ async def help_cmd(m: types.Message):
 async def save_cmd(m: types.Message):
     if not await admin_only(m):
         return
+    bump_catalog_revision()
     save_bot_data()
     await m.answer("✅ Все изменения сохранены.")
 
@@ -565,9 +597,13 @@ async def del_cmd(m: types.Message, state: FSMContext):
     if name.lower() == "all":
         PRODUCTS.clear()
         EXTRA_PRODUCTS.clear()
-        save_bot_data()
+        bump_catalog_revision()
+        save_empty_catalog()
         await state.clear()
-        await m.answer("✅ Весь товар полностью удалён вместе с ценами.")
+        await m.answer(
+            "✅ Весь товар полностью удалён вместе с ценами.\n"
+            "Старые кнопки товаров теперь недействительны."
+        )
         return
 
     deleted = False
@@ -581,6 +617,8 @@ async def del_cmd(m: types.Message, state: FSMContext):
         EXTRA_PRODUCTS.pop(extra_key, None)
         deleted = True
 
+    if deleted:
+        bump_catalog_revision()
     save_bot_data()
     await state.clear()
     await m.answer(f"✅ Товар удалён: <b>{escape(name)}</b>" if deleted else "❌ Такой товар не найден.")
@@ -761,12 +799,19 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
     try:
-        _, cc, pid = c.data.split(":", 2)
+        _, rev_text, cc, pid = c.data.split(":", 3)
+        rev = int(rev_text)
     except Exception:
         await c.answer("Кнопка устарела.", show_alert=True)
         return
 
     city = CODE_CITIES.get(cc)
+
+    if rev != CATALOG_REVISION:
+        await c.answer("Каталог обновился. Выберите товар заново.", show_alert=True)
+        if city:
+            await show_products(c.message, state, city, edit=True)
+        return
     if not city:
         await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
         return
@@ -795,17 +840,26 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     await safe_edit(
         c.message,
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b> — <b>{price} ₽</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(districts, token),
+        reply_markup=districts_keyboard(city, districts, token),
     )
 
-@dp.callback_query(F.data == "back_products")
+@dp.callback_query(F.data.startswith("back_products"))
 async def cb_back_products(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
     data = await state.get_data()
-    city = data.get("city")
+
+    city = None
+    parts = c.data.split(":", 1)
+    if len(parts) == 2:
+        city = CODE_CITIES.get(parts[1])
+
+    if not city:
+        city = data.get("city")
+
     if not city:
         await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
         return
+
     await show_products(c.message, state, city, edit=True)
 
 @dp.callback_query(F.data.startswith("d:"))
