@@ -529,7 +529,7 @@ async def help_cmd(m: types.Message):
         "/cash del btc|usdt|ton|all — удалить кошельки\n"
         "/save — сохранить\n"
         "/load — загрузить\n"
-        "/adminid — проверить ID"
+        "/adminid — проверить ID\n/debug — проверить данные бота"
     )
 
 @dp.message(Command("save"))
@@ -548,6 +548,19 @@ async def load_cmd(m: types.Message):
         await m.answer("✅ Последние сохранённые значения загружены.")
     else:
         await m.answer("❌ Сохранение не найдено.")
+
+
+@dp.message(Command("debug"))
+async def debug_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
+    await m.answer(
+        f"CATALOG_REVISION: <code>{CATALOG_REVISION}</code>\n"
+        f"CATALOG_TOKEN: <code>{CATALOG_TOKEN}</code>\n"
+        f"Основные: <b>{len(PRODUCTS)}</b>\n"
+        f"Дополнительные: <b>{len(EXTRA_PRODUCTS)}</b>\n"
+        f"Кошельки BTC/USDT/TON: <b>{len(WALLETS.get('btc', []))}/{len(WALLETS.get('usdt', []))}/{len(WALLETS.get('ton', []))}</b>"
+    )
 
 @dp.message(F.text.regexp(r"^/add(@\w+)?(\s|$)"))
 async def add_cmd(m: types.Message):
@@ -817,19 +830,12 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
     try:
-        _, rev_text, token_text, cc, pid = c.data.split(":", 4)
-        rev = int(rev_text)
+        _, cc, pid = c.data.split(":", 2)
     except Exception:
         await c.answer("Кнопка устарела.", show_alert=True)
         return
 
     city = CODE_CITIES.get(cc)
-
-    if rev != CATALOG_REVISION or token_text != CATALOG_TOKEN:
-        await c.answer("Каталог обновился. Выберите товар заново.", show_alert=True)
-        if city:
-            await show_products(c.message, state, city, edit=True)
-        return
     if not city:
         await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
         return
@@ -901,7 +907,7 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
             await show_products(c.message, state, city, edit=True)
         return
 
-    if data.get("catalog_token") != CATALOG_TOKEN or data.get("catalog_revision") != CATALOG_REVISION:
+    if data.get("catalog_token") and data.get("catalog_token") != CATALOG_TOKEN:
         await c.answer("Каталог обновился. Выберите товар заново.", show_alert=True)
         city = data.get("city")
         if city:
