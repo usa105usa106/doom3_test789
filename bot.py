@@ -30,6 +30,29 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
+RECENT_MESSAGE_IDS: set[tuple[int, int]] = set()
+RECENT_CALLBACK_IDS: set[str] = set()
+
+@dp.message.outer_middleware()
+async def drop_duplicate_messages(handler, event: types.Message, data: dict):
+    key = (event.chat.id, event.message_id)
+    if key in RECENT_MESSAGE_IDS:
+        return
+    RECENT_MESSAGE_IDS.add(key)
+    if len(RECENT_MESSAGE_IDS) > 1000:
+        RECENT_MESSAGE_IDS.clear()
+    return await handler(event, data)
+
+@dp.callback_query.outer_middleware()
+async def drop_duplicate_callbacks(handler, event: types.CallbackQuery, data: dict):
+    if event.id in RECENT_CALLBACK_IDS:
+        return
+    RECENT_CALLBACK_IDS.add(event.id)
+    if len(RECENT_CALLBACK_IDS) > 1000:
+        RECENT_CALLBACK_IDS.clear()
+    return await handler(event, data)
+
+
 DATA_SAVE_FILE = os.getenv(
     "DATA_SAVE_FILE",
     "/data/bot_saved_data.json" if os.path.exists("/data") else "bot_saved_data.json",
@@ -443,9 +466,9 @@ def products_keyboard(city: str):
     rows.append([InlineKeyboardButton(text="🔙 Города", callback_data="city"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def districts_keyboard(city: str, districts: list[str], token: str):
+def districts_keyboard(city: str, product_pid: str, districts: list[str]):
     cc = CITY_CODES.get(city, "x")
-    rows = [[InlineKeyboardButton(text=d, callback_data=f"d:{token}:{i}")] for i, d in enumerate(districts)]
+    rows = [[InlineKeyboardButton(text=d, callback_data=f"d:{cc}:{product_pid}:{i}")] for i, d in enumerate(districts)]
     rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_products:{cc}"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -850,7 +873,6 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
 
     product, price = found
     districts = get_city_districts(city)
-    token = str(random.randint(100000, 999999))
 
     await state.update_data(
         city=city,
@@ -858,7 +880,6 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
         price=price,
         product_pid=pid,
         districts=districts,
-        order_token=token,
         catalog_token=CATALOG_TOKEN,
         catalog_revision=CATALOG_REVISION,
     )
@@ -866,7 +887,7 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     await safe_edit(
         c.message,
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b> — <b>{price} ₽</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(city, districts, token),
+        reply_markup=districts_keyboard(city, pid, districts),
     )
 
 @dp.callback_query(F.data.startswith("back_products"))
@@ -891,50 +912,50 @@ async def cb_back_products(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("d:"))
 async def cb_district(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
-    data = await state.get_data()
 
     try:
-        _, token, district_idx_text = c.data.split(":", 2)
+        _, cc, pid, district_idx_text = c.data.split(":", 3)
         district_idx = int(district_idx_text)
     except Exception:
         await c.answer("Кнопка устарела.", show_alert=True)
         return
 
-    if token != data.get("order_token"):
-        await c.answer("Кнопка устарела. Выберите товар заново.", show_alert=True)
-        city = data.get("city")
-        if city:
-            await show_products(c.message, state, city, edit=True)
+    city = CODE_CITIES.get(cc)
+    if not city:
+        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
         return
 
-    if data.get("catalog_token") and data.get("catalog_token") != CATALOG_TOKEN:
-        await c.answer("Каталог обновился. Выберите товар заново.", show_alert=True)
-        city = data.get("city")
-        if city:
-            await show_products(c.message, state, city, edit=True)
-        return
-
-    city = data.get("city")
-    product = data.get("product")
-    price = data.get("price")
-    districts = data.get("districts") or []
-
-    if not city or not product or not price or district_idx < 0 or district_idx >= len(districts):
-        await c.answer("Данные устарели. Выберите товар заново.", show_alert=True)
-        if city:
-            await show_products(c.message, state, city, edit=True)
-        return
-
-    # Проверяем, что товар всё ещё существует в актуальном каталоге.
-    pid = data.get("product_pid")
-    if not any(item_pid == pid for item_pid, _, _ in current_catalog(city)):
-        await c.answer("Товар был удалён. Выберите другой товар.", show_alert=True)
+    catalog = current_catalog(city)
+    found = next(((name, price) for item_pid, name, price in catalog if item_pid == pid), None)
+    if not found:
+        await c.answer("Товар удалён или каталог обновился. Выберите товар заново.", show_alert=True)
         await show_products(c.message, state, city, edit=True)
         return
 
+    # Берём районы из state, если они подходят этому товару, иначе строим заново.
+    data = await state.get_data()
+    districts = data.get("districts")
+    if not districts or data.get("city") != city or data.get("product_pid") != pid:
+        districts = get_city_districts(city)
+
+    if district_idx < 0 or district_idx >= len(districts):
+        await c.answer("Район устарел. Выберите товар заново.", show_alert=True)
+        await show_products(c.message, state, city, edit=True)
+        return
+
+    product, price = found
     district = districts[district_idx]
     order_id = random.randint(1000000, 9999999)
-    await state.update_data(order_id=order_id, t=time.time(), district=district)
+
+    await state.update_data(
+        city=city,
+        product=product,
+        price=price,
+        product_pid=pid,
+        district=district,
+        order_id=order_id,
+        t=time.time(),
+    )
 
     btc, usdt, ton = get_crypto_amounts(int(price))
 
@@ -989,7 +1010,9 @@ async def unknown_command(m: types.Message):
         await m.answer("⛔ Эта команда доступна только администратору бота.")
 
 async def main():
-    await dp.start_polling(bot)
+    # Сбрасываем старые pending updates после redeploy, чтобы бот не повторял старые сообщения.
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
     asyncio.run(main())
