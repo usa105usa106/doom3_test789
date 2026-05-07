@@ -145,40 +145,72 @@ def save_bot_data():
         "extra_products": EXTRA_PRODUCTS,
         "wallets": WALLETS,
         "about_text": ABOUT_TEXT,
+        "saved_at": time.time(),
     }
-    for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE]:
+
+    # Пишем во все возможные файлы, чтобы Railway/local не расходились.
+    paths = []
+    for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE, "/data/bot_saved_data.json", "bot_saved_data.json"]:
+        if path not in paths:
+            paths.append(path)
+
+    saved_any = False
+    for path in paths:
         try:
             parent = os.path.dirname(path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            saved_any = True
         except Exception as e:
             logging.warning("save failed %s: %s", path, e)
 
+    if not saved_any:
+        raise RuntimeError("Не удалось сохранить данные ни в один файл")
+
 def load_bot_data() -> bool:
     global ABOUT_TEXT
-    for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE]:
-        if not os.path.exists(path):
-            continue
+
+    paths = []
+    for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE, "/data/bot_saved_data.json", "bot_saved_data.json"]:
+        if path not in paths and os.path.exists(path):
+            paths.append(path)
+
+    candidates = []
+    for path in paths:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            PRODUCTS.clear()
-            PRODUCTS.update({str(k): int(v) for k, v in data.get("products", {}).items()})
-            EXTRA_PRODUCTS.clear()
-            EXTRA_PRODUCTS.update({str(k): int(v) for k, v in data.get("extra_products", {}).items()})
-            wallets = data.get("wallets", {})
-            for k in WALLETS:
-                v = wallets.get(k, [])
-                if isinstance(v, str):
-                    v = [v] if v.strip() else []
-                WALLETS[k] = [str(x).strip() for x in v if str(x).strip()]
-            ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
-            return True
+            saved_at = float(data.get("saved_at", os.path.getmtime(path)))
+            candidates.append((saved_at, path, data))
         except Exception as e:
             logging.warning("load failed %s: %s", path, e)
-    return False
+
+    if not candidates:
+        return False
+
+    # Берём самый свежий файл. Это исправляет ситуацию, когда старый /data файл пустой,
+    # а новый товар был сохранён в локальный bot_saved_data.json.
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    _, path, data = candidates[0]
+
+    PRODUCTS.clear()
+    PRODUCTS.update({str(k): int(v) for k, v in data.get("products", {}).items()})
+
+    EXTRA_PRODUCTS.clear()
+    EXTRA_PRODUCTS.update({str(k): int(v) for k, v in data.get("extra_products", {}).items()})
+
+    wallets = data.get("wallets", {})
+    for k in WALLETS:
+        v = wallets.get(k, [])
+        if isinstance(v, str):
+            v = [v] if v.strip() else []
+        WALLETS[k] = [str(x).strip() for x in v if str(x).strip()]
+
+    ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
+    logging.info("loaded data from %s products=%s extra=%s", path, len(PRODUCTS), len(EXTRA_PRODUCTS))
+    return True
 
 load_bot_data()
 
@@ -392,6 +424,7 @@ async def rates_cmd(m: types.Message):
 async def debug_cmd(m: types.Message):
     if not await admin_only(m):
         return
+    load_bot_data()
     await m.answer(
         f"Основные: <b>{len(PRODUCTS)}</b>\n"
         f"Дополнительные: <b>{len(EXTRA_PRODUCTS)}</b>\n"
@@ -413,9 +446,10 @@ async def load_cmd(m: types.Message):
     await m.answer("✅ Загружено." if load_bot_data() else "❌ Сохранение не найдено.")
 
 @dp.message(F.text.regexp(r"^/add(@\w+)?(\s|$)"))
-async def add_cmd(m: types.Message):
+async def add_cmd(m: types.Message, state: FSMContext):
     if not await admin_only(m):
         return
+    await state.clear()
     rest = command_args(m.text)
     if rest.lower() == "info":
         load_bot_data()
@@ -446,6 +480,7 @@ async def add_cmd(m: types.Message):
         group = "дополнительные"
     ORDER_DRAFTS.clear()
     save_bot_data()
+    load_bot_data()
     await m.answer(f"✅ Товар сохранён: <b>{escape(name)}</b> — <b>{price} ₽</b>\nРаздел: <b>{group}</b>\nВсего: <b>{len(PRODUCTS)+len(EXTRA_PRODUCTS)}</b>")
 
 @dp.message(F.text.regexp(r"^/(del|dell)(@\w+)?(\s|$)"))
