@@ -715,6 +715,9 @@ def bump_data_version() -> None:
     global DATA_VERSION
     DATA_VERSION += 1
 
+def make_order_token() -> str:
+    return str(random.randint(100000, 999999))
+
 def save_bot_data() -> None:
     """Сохраняет данные в основной файл и локальную копию."""
     normalize_wallets()
@@ -776,7 +779,7 @@ def load_bot_data() -> bool:
         WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
 
     ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
-    DATA_VERSION = int(data.get("data_version", DATA_VERSION)) + 1
+    DATA_VERSION = int(data.get("data_version", DATA_VERSION))
     logging.info("Bot data loaded from %s. Wallets count: btc=%s usdt=%s ton=%s",
                  load_path, len(WALLETS.get("btc", [])), len(WALLETS.get("usdt", [])), len(WALLETS.get("ton", [])))
     return True
@@ -1299,6 +1302,7 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
 
     product, price = product_items[product_index]
     districts = get_city_districts(city)
+    order_token = make_order_token()
 
     await state.update_data(
         city=city,
@@ -1306,13 +1310,14 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
         product_index=product_index,
         price=price,
         districts=districts,
+        order_token=order_token,
     )
     await state.set_state(S.district)
 
     await safe_edit(
         c.message,
-        f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(city, product_index),
+        f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b> — <b>{price} ₽</b>\n\nВыберите район:",
+        reply_markup=districts_keyboard(city, product_index, districts, order_token),
     )
 
 @dp.callback_query(F.data == "back_products")
@@ -1333,16 +1338,20 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
     try:
-        _, version_text, cc, product_index_text, district_index_text = c.data.split(":", 4)
-        callback_version = int(version_text)
+        _, token, cc, product_index_text, district_index_text = c.data.split(":", 4)
         product_index = int(product_index_text)
         district_index = int(district_index_text)
-        if callback_version != DATA_VERSION:
+        if token != data.get("order_token"):
             raise ValueError("old district keyboard")
     except Exception:
-        await c.answer("Кнопка устарела. Выберите город заново.", show_alert=True)
-        await state.set_state(S.city)
-        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+        await c.answer("Кнопка устарела. Выберите товар заново.", show_alert=True)
+        city = data.get("city")
+        if city:
+            await state.set_state(S.product)
+            await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+        else:
+            await state.set_state(S.city)
+            await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
         return
 
     city = city_from_code(cc, data)
@@ -1366,8 +1375,8 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
         product, _ = product_items[product_index]
         await safe_edit(
             c.message,
-            f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b>\n\nВыберите район:",
-            reply_markup=districts_keyboard(city, product_index),
+            f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b> — <b>{product_items[product_index][1]} ₽</b>\n\nВыберите район:",
+            reply_markup=districts_keyboard(city, product_index, districts, data.get("order_token") or make_order_token()),
         )
         return
 
