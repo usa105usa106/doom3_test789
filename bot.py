@@ -4,9 +4,11 @@ import logging
 import os
 import random
 import re
+import sqlite3
 import time
 import urllib.request
 from html import escape
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
@@ -22,29 +24,18 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not set")
 
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db" if os.path.exists("/data") else "bot.db")
+ADMIN_FILE = "admin_ids.json"
+HARD_ADMIN_IDS = [5172121123]
+
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
-DATA_SAVE_FILE = os.getenv("DATA_SAVE_FILE", "/data/bot_saved_data.json" if os.path.exists("/data") else "bot_saved_data.json")
-LOCAL_SAVE_FILE = "bot_saved_data.json"
-ADMIN_FILE = "admin_ids.json"
-
-HARD_ADMIN_IDS = [5172121123]
-
-PRODUCTS: dict[str, int] = {}
-EXTRA_PRODUCTS: dict[str, int] = {}
-WALLETS = {"btc": [], "usdt": [], "ton": []}
-WALLET_TITLES = {"btc": "BTC", "usdt": "USDT-(TRC20)", "ton": "TON"}
-ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
-
-# Резервные курсы в рублях за 1 монету. Можно менять в Railway Variables.
 BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
 USDT_RATE = float(os.getenv("USDT_RATE", os.getenv("USDT_TRC20_RATE", "90")))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
 USE_LIVE_RATES = os.getenv("USE_LIVE_RATES", "1").strip() != "0"
 _rates_cache = {"ts": 0.0, "rates": None}
-
-ORDER_DRAFTS: dict[str, dict] = {}
 
 ALL_CITIES = [
 "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань","Нижний Новгород","Челябинск","Омск","Самара","Ростов-на-Дону",
@@ -98,6 +89,84 @@ class S(StatesGroup):
     cash_wallet = State()
     support_message = State()
 
+def db():
+    parent = os.path.dirname(DB_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=30000")
+    return con
+
+def init_db():
+    with db() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS products(
+                name TEXT PRIMARY KEY,
+                price INTEGER NOT NULL,
+                group_name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS wallets(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                address TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS settings(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS processed(
+                key TEXT PRIMARY KEY,
+                created_at REAL NOT NULL
+            )
+        """)
+        con.commit()
+
+init_db()
+
+def processed_once(key: str) -> bool:
+    """True = можно обрабатывать. False = дубль."""
+    now = time.time()
+    try:
+        with db() as con:
+            con.execute("DELETE FROM processed WHERE created_at < ?", (now - 120,))
+            con.execute("INSERT INTO processed(key, created_at) VALUES(?, ?)", (key, now))
+            con.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    except Exception:
+        return True
+
+@dp.message.outer_middleware()
+async def dedupe_messages(handler, event: types.Message, data: dict):
+    key = f"m:{event.chat.id}:{event.message_id}"
+    if not processed_once(key):
+        return
+    return await handler(event, data)
+
+@dp.callback_query.outer_middleware()
+async def dedupe_callbacks(handler, event: types.CallbackQuery, data: dict):
+    # отвечаем сразу, чтобы кнопка не пульсировала
+    try:
+        await event.answer()
+    except Exception:
+        pass
+    key = f"c:{event.id}"
+    if not processed_once(key):
+        return
+    return await handler(event, data)
+
 def load_admin_ids() -> set[int]:
     ids = {int(x) for x in HARD_ADMIN_IDS}
     for name in ["ADMIN_IDS", "ADMIN_ID", "admin_ids", "admin_id", "ADMINS"]:
@@ -131,89 +200,6 @@ async def admin_only(m: types.Message) -> bool:
     await m.answer(f"⛔ Только администратор.\nВаш Telegram ID: <code>{uid}</code>")
     return False
 
-def normalize_wallets():
-    for k, v in list(WALLETS.items()):
-        if isinstance(v, str):
-            WALLETS[k] = [v] if v.strip() else []
-        else:
-            WALLETS[k] = [str(x).strip() for x in v if str(x).strip()]
-
-def save_bot_data():
-    normalize_wallets()
-    data = {
-        "products": PRODUCTS,
-        "extra_products": EXTRA_PRODUCTS,
-        "wallets": WALLETS,
-        "about_text": ABOUT_TEXT,
-        "saved_at": time.time(),
-    }
-
-    # Пишем во все возможные файлы, чтобы Railway/local не расходились.
-    paths = []
-    for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE, "/data/bot_saved_data.json", "bot_saved_data.json"]:
-        if path not in paths:
-            paths.append(path)
-
-    saved_any = False
-    for path in paths:
-        try:
-            parent = os.path.dirname(path)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            saved_any = True
-        except Exception as e:
-            logging.warning("save failed %s: %s", path, e)
-
-    if not saved_any:
-        raise RuntimeError("Не удалось сохранить данные ни в один файл")
-
-def load_bot_data() -> bool:
-    global ABOUT_TEXT
-
-    paths = []
-    for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE, "/data/bot_saved_data.json", "bot_saved_data.json"]:
-        if path not in paths and os.path.exists(path):
-            paths.append(path)
-
-    candidates = []
-    for path in paths:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            saved_at = float(data.get("saved_at", os.path.getmtime(path)))
-            candidates.append((saved_at, path, data))
-        except Exception as e:
-            logging.warning("load failed %s: %s", path, e)
-
-    if not candidates:
-        return False
-
-    # Берём самый свежий файл. Это исправляет ситуацию, когда старый /data файл пустой,
-    # а новый товар был сохранён в локальный bot_saved_data.json.
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    _, path, data = candidates[0]
-
-    PRODUCTS.clear()
-    PRODUCTS.update({str(k): int(v) for k, v in data.get("products", {}).items()})
-
-    EXTRA_PRODUCTS.clear()
-    EXTRA_PRODUCTS.update({str(k): int(v) for k, v in data.get("extra_products", {}).items()})
-
-    wallets = data.get("wallets", {})
-    for k in WALLETS:
-        v = wallets.get(k, [])
-        if isinstance(v, str):
-            v = [v] if v.strip() else []
-        WALLETS[k] = [str(x).strip() for x in v if str(x).strip()]
-
-    ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
-    logging.info("loaded data from %s products=%s extra=%s", path, len(PRODUCTS), len(EXTRA_PRODUCTS))
-    return True
-
-load_bot_data()
-
 def command_args(text: str) -> str:
     parts = (text or "").split(maxsplit=1)
     return parts[1].strip() if len(parts) > 1 else ""
@@ -225,56 +211,139 @@ def find_supported_city(raw: str) -> str | None:
             return city
     return None
 
+def get_about_text() -> str:
+    with db() as con:
+        row = con.execute("SELECT value FROM settings WHERE key='about_text'").fetchone()
+    return row["value"] if row else "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
+
+def set_about_text(text: str):
+    with db() as con:
+        con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('about_text', ?)", (text,))
+        con.commit()
+
+def all_products():
+    with db() as con:
+        rows = con.execute("SELECT name, price, group_name, sort_order FROM products ORDER BY sort_order, rowid").fetchall()
+    return [dict(r) for r in rows]
+
+def group_counts():
+    rows = all_products()
+    return (
+        sum(1 for r in rows if r["group_name"] == "main"),
+        sum(1 for r in rows if r["group_name"] == "extra"),
+    )
+
 def product_pid(name: str, group: str) -> str:
-    # короткий стабильный id без кириллицы и без длинных callback_data
     import hashlib
     return hashlib.blake2s(f"{group}:{name}".encode("utf-8"), digest_size=4).hexdigest()
 
-def current_catalog(city: str) -> list[dict]:
-    items = []
-    for name, price in list(PRODUCTS.items())[:5]:
-        items.append({"pid": product_pid(name, "main"), "name": name, "price": int(price)})
-
-    if EXTRA_PRODUCTS:
-        names = list(EXTRA_PRODUCTS.keys())
-        if len(names) <= 6:
-            selected = names
+def current_catalog(city: str):
+    rows = all_products()
+    mains = [r for r in rows if r["group_name"] == "main"][:5]
+    extras = [r for r in rows if r["group_name"] == "extra"]
+    selected = []
+    if extras:
+        if len(extras) <= 6:
+            selected = extras
         else:
-            rnd = random.Random(f"{city}|{','.join(names)}|{','.join(str(EXTRA_PRODUCTS[n]) for n in names)}")
-            selected = rnd.sample(names, rnd.randint(3, 6))
-        for name in selected:
-            items.append({"pid": product_pid(name, "extra"), "name": name, "price": int(EXTRA_PRODUCTS[name])})
-    return items
+            seed = city + "|" + "|".join(f"{r['name']}:{r['price']}" for r in extras)
+            rnd = random.Random(seed)
+            selected = rnd.sample(extras, rnd.randint(3, 6))
+    out = []
+    for r in mains + selected:
+        out.append({
+            "pid": product_pid(r["name"], r["group_name"]),
+            "name": r["name"],
+            "price": int(r["price"]),
+            "group": r["group_name"],
+        })
+    return out
 
-def has_products() -> bool:
-    return bool(PRODUCTS or EXTRA_PRODUCTS)
-
-def get_city_districts(city: str) -> list[str]:
-    if city in TOP_CITIES:
-        return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
-    return random.sample(FALLBACK_DISTRICTS, random.randint(2, 4))
-
-def products_info_text() -> str:
-    total = len(PRODUCTS) + len(EXTRA_PRODUCTS)
-    lines = [f"📦 <b>Весь товар с ценами</b> — всего: <b>{total}</b>\n"]
-    lines.append(f"<b>Основные товары ({len(PRODUCTS)}):</b>")
-    lines += [f"• {escape(n)} — <b>{p} ₽</b>" for n, p in PRODUCTS.items()] or ["нет товаров"]
-    lines.append("")
-    lines.append(f"<b>Дополнительные товары ({len(EXTRA_PRODUCTS)}):</b>")
-    lines += [f"• {escape(n)} — <b>{p} ₽</b>" for n, p in EXTRA_PRODUCTS.items()] or ["нет товаров"]
-    return "\n".join(lines)
-
-
-def resolve_catalog_item(city: str, value: str):
+def resolve_item(city: str, pid_or_index: str):
     catalog = current_catalog(city)
-    found = next((x for x in catalog if x["pid"] == value), None)
-    if found:
-        return found
-    if value.isdigit():
-        idx = int(value)
+    for item in catalog:
+        if item["pid"] == pid_or_index:
+            return item
+    if str(pid_or_index).isdigit():
+        idx = int(pid_or_index)
         if 0 <= idx < len(catalog):
             return catalog[idx]
     return None
+
+def add_product(name: str, price: int):
+    rows = all_products()
+    existing = next((r for r in rows if r["name"].lower() == name.lower()), None)
+    now = time.time()
+    with db() as con:
+        if existing:
+            con.execute("UPDATE products SET price=?, updated_at=? WHERE lower(name)=lower(?)", (price, now, name))
+            group = "основные" if existing["group_name"] == "main" else "дополнительные"
+        else:
+            main_count = sum(1 for r in rows if r["group_name"] == "main")
+            group_name = "main" if main_count < 5 else "extra"
+            sort_order = len(rows) + 1
+            con.execute(
+                "INSERT INTO products(name, price, group_name, sort_order, updated_at) VALUES(?,?,?,?,?)",
+                (name, price, group_name, sort_order, now),
+            )
+            group = "основные" if group_name == "main" else "дополнительные"
+        con.commit()
+    return group
+
+def delete_product(name: str) -> bool:
+    with db() as con:
+        cur = con.execute("DELETE FROM products WHERE lower(name)=lower(?)", (name,))
+        con.commit()
+    return cur.rowcount > 0
+
+def clear_products():
+    with db() as con:
+        con.execute("DELETE FROM products")
+        con.commit()
+
+def products_info_text() -> str:
+    rows = all_products()
+    mains = [r for r in rows if r["group_name"] == "main"]
+    extras = [r for r in rows if r["group_name"] == "extra"]
+    lines = [f"📦 <b>Весь товар с ценами</b> — всего: <b>{len(rows)}</b>\n"]
+    lines.append(f"<b>Основные товары ({len(mains)}):</b>")
+    lines += [f"• {escape(r['name'])} — <b>{r['price']} ₽</b>" for r in mains] or ["нет товаров"]
+    lines.append("")
+    lines.append(f"<b>Дополнительные товары ({len(extras)}):</b>")
+    lines += [f"• {escape(r['name'])} — <b>{r['price']} ₽</b>" for r in extras] or ["нет товаров"]
+    return "\n".join(lines)
+
+def add_wallet(t: str, address: str):
+    with db() as con:
+        con.execute("INSERT INTO wallets(type,address,created_at) VALUES(?,?,?)", (t, address, time.time()))
+        con.commit()
+
+def get_wallets(t: str):
+    with db() as con:
+        rows = con.execute("SELECT address FROM wallets WHERE type=? ORDER BY id", (t,)).fetchall()
+    return [r["address"] for r in rows]
+
+def clear_wallets(t: str | None = None):
+    with db() as con:
+        if t:
+            con.execute("DELETE FROM wallets WHERE type=?", (t,))
+        else:
+            con.execute("DELETE FROM wallets")
+        con.commit()
+
+def wallets_text(t: str) -> str:
+    items = get_wallets(t)
+    return "\n".join(f"• <code>{escape(w)}</code>" for w in items) if items else "не задан"
+
+def random_wallet(t: str) -> str:
+    items = get_wallets(t)
+    return random.choice(items) if items else "не задан"
+
+def get_districts(city: str, pid: str) -> list[str]:
+    if city in TOP_CITIES:
+        return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
+    rnd = random.Random(f"{city}:{pid}")
+    return rnd.sample(FALLBACK_DISTRICTS, rnd.randint(2, 4))
 
 def get_rates() -> dict:
     if not USE_LIVE_RATES:
@@ -293,12 +362,11 @@ def get_rates() -> dict:
         }
         _rates_cache.update({"ts": now, "rates": rates})
         return rates
-    except Exception as e:
-        logging.warning("live rates failed, fallback used: %s", e)
+    except Exception:
         return {"btc": BTC_RATE, "usdt": USDT_RATE, "ton": TON_RATE}
 
-def fmt_amount(value: float, decimals: int) -> str:
-    return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+def fmt_amount(v: float, decimals: int) -> str:
+    return f"{v:.{decimals}f}".rstrip("0").rstrip(".")
 
 def crypto_amounts(rub: int):
     rates = get_rates()
@@ -308,16 +376,6 @@ def crypto_amounts(rub: int):
         fmt_amount(rub / rates["ton"], 3),
         rates,
     )
-
-def get_random_wallet(t: str) -> str:
-    normalize_wallets()
-    items = WALLETS.get(t, [])
-    return random.choice(items) if items else "не задан"
-
-def wallets_text(t: str) -> str:
-    normalize_wallets()
-    items = WALLETS.get(t, [])
-    return "\n".join(f"• <code>{escape(w)}</code>" for w in items) if items else "не задан"
 
 def main_kb():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
@@ -329,7 +387,7 @@ def main_kb():
     ])
 
 def city_keyboard():
-    rows = [[InlineKeyboardButton(text=city, callback_data=f"city:{CITY_CODES[city]}")] for city in ALL_CITIES[:15]]
+    rows = [[InlineKeyboardButton(text=c, callback_data=f"city:{CITY_CODES[c]}")] for c in ALL_CITIES[:15]]
     rows.append([InlineKeyboardButton(text="🔎 Другой город", callback_data="other_city")])
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -340,9 +398,11 @@ def products_keyboard(city: str):
     rows.append([InlineKeyboardButton(text="🔙 Города", callback_data="city_menu"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def districts_keyboard(draft_id: str, districts: list[str]):
-    rows = [[InlineKeyboardButton(text=d, callback_data=f"dist:{draft_id}:{i}")] for i, d in enumerate(districts)]
-    rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_products:{draft_id}"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
+def districts_keyboard(city: str, pid: str):
+    cc = CITY_CODES.get(city, "0")
+    districts = get_districts(city, pid)
+    rows = [[InlineKeyboardButton(text=d, callback_data=f"dist:{cc}:{pid}:{i}")] for i, d in enumerate(districts)]
+    rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data=f"back:{cc}"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def payment_keyboard():
@@ -351,34 +411,28 @@ def payment_keyboard():
         [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")],
     ])
 
-async def send_city_menu(target, state: FSMContext):
+async def show_city_menu(target, state: FSMContext):
     await state.clear()
     await target.answer("🏙 Выберите город:", reply_markup=city_keyboard())
 
-async def send_products(target, state: FSMContext, city: str):
-    # Перед показом товаров перечитываем сохранение, чтобы город видел свежие /add.
-    load_bot_data()
+async def show_products(target, state: FSMContext, city: str):
     await state.update_data(city=city)
     catalog = current_catalog(city)
     if not catalog:
+        m, e = group_counts()
         await target.answer(
             "📦 Товары не добавлены или не загружены.\n"
-            f"Основные: <b>{len(PRODUCTS)}</b>, дополнительные: <b>{len(EXTRA_PRODUCTS)}</b>\n"
-            "Админ может проверить /add info и /debug."
+            f"Основные: <b>{m}</b>, дополнительные: <b>{e}</b>\n"
+            "Проверьте /add info и /debug."
         )
         return
     await target.answer(f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
 
 @dp.message(Command("start"))
 async def start_cmd(m: types.Message, state: FSMContext):
-    if m.from_user:
-        uid = int(m.from_user.id)
-        if not ADMIN_IDS:
-            ADMIN_IDS.add(uid)
-            save_admin_ids()
-        if uid in HARD_ADMIN_IDS:
-            ADMIN_IDS.add(uid)
-            save_admin_ids()
+    if m.from_user and not ADMIN_IDS:
+        ADMIN_IDS.add(m.from_user.id)
+        save_admin_ids()
     await state.clear()
     await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=main_kb())
 
@@ -389,131 +443,78 @@ async def adminid_cmd(m: types.Message):
 
 @dp.message(Command("help"))
 async def help_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
+    if not await admin_only(m): return
     await m.answer(
-        "📋 <b>Команды</b>\n"
-        "/add товар цена — добавить товар\n"
-        "/add info — все товары\n"
-        "/del товар — удалить товар\n"
-        "/del all или /dell all — удалить всё\n"
-        "/cash info — кошельки\n"
-        "/cash btc адрес — добавить BTC\n"
-        "/cash usdt адрес — добавить USDT\n"
-        "/cash ton адрес — добавить TON\n"
-        "/rates — курсы\n"
-        "/debug — проверка данных\n"
-        "/save — сохранить\n"
-        "/load — загрузить"
-    )
-
-@dp.message(Command("rates"))
-async def rates_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    r = get_rates()
-    await m.answer(
-        "💱 <b>Курсы RUB за 1 монету</b>\n"
-        f"BTC: <b>{r['btc']}</b>\n"
-        f"USDT: <b>{r['usdt']}</b>\n"
-        f"TON: <b>{r['ton']}</b>\n"
-        f"Live rates: <b>{USE_LIVE_RATES}</b>"
+        "/add товар цена — добавить\n/add info — список\n/del all — удалить всё\n"
+        "/cash btc адрес — добавить BTC\n/cash usdt адрес — добавить USDT\n/cash ton адрес — добавить TON\n"
+        "/cash info — кошельки\n/rates — курсы\n/debug — проверка"
     )
 
 @dp.message(Command("debug"))
 async def debug_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    load_bot_data()
+    if not await admin_only(m): return
+    mcnt, ecnt = group_counts()
     await m.answer(
-        f"Основные: <b>{len(PRODUCTS)}</b>\n"
-        f"Дополнительные: <b>{len(EXTRA_PRODUCTS)}</b>\n"
-        f"Drafts: <b>{len(ORDER_DRAFTS)}</b>\n"
-        f"Save file: <code>{escape(DATA_SAVE_FILE)}</code>"
+        f"DB: <code>{escape(DB_PATH)}</code>\n"
+        f"Основные: <b>{mcnt}</b>\nДополнительные: <b>{ecnt}</b>\n"
+        f"BTC/USDT/TON кошельки: <b>{len(get_wallets('btc'))}/{len(get_wallets('usdt'))}/{len(get_wallets('ton'))}</b>"
     )
+
+@dp.message(Command("rates"))
+async def rates_cmd(m: types.Message):
+    if not await admin_only(m): return
+    r = get_rates()
+    await m.answer(f"BTC: <b>{r['btc']}</b> RUB\nUSDT: <b>{r['usdt']}</b> RUB\nTON: <b>{r['ton']}</b> RUB\nLive: <b>{USE_LIVE_RATES}</b>")
 
 @dp.message(Command("save"))
 async def save_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    save_bot_data()
-    await m.answer("✅ Сохранено.")
+    if not await admin_only(m): return
+    await m.answer("✅ SQLite сохраняет данные автоматически.")
 
 @dp.message(Command("load"))
 async def load_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    await m.answer("✅ Загружено." if load_bot_data() else "❌ Сохранение не найдено.")
+    if not await admin_only(m): return
+    await m.answer("✅ SQLite загружает данные автоматически.")
 
 @dp.message(F.text.regexp(r"^/add(@\w+)?(\s|$)"))
 async def add_cmd(m: types.Message, state: FSMContext):
-    if not await admin_only(m):
-        return
+    if not await admin_only(m): return
     await state.clear()
     rest = command_args(m.text)
     if rest.lower() == "info":
-        load_bot_data()
         await m.answer(products_info_text())
         return
     if not rest or len(rest.split()) < 2:
-        await m.answer("❌ Формат: <code>/add Книга 500</code>")
+        await m.answer("❌ Формат: <code>/add Книга 5000</code>")
         return
     name, price_text = rest.rsplit(maxsplit=1)
     if not price_text.isdigit() or int(price_text) <= 0:
         await m.answer("❌ Цена должна быть числом больше 0.")
         return
     name = name.strip().capitalize()
-    price = int(price_text)
-    key = next((x for x in PRODUCTS if x.lower() == name.lower()), None)
-    ekey = next((x for x in EXTRA_PRODUCTS if x.lower() == name.lower()), None)
-    if key:
-        PRODUCTS[key] = price
-        group = "основные"
-    elif ekey:
-        EXTRA_PRODUCTS[ekey] = price
-        group = "дополнительные"
-    elif len(PRODUCTS) < 5:
-        PRODUCTS[name] = price
-        group = "основные"
-    else:
-        EXTRA_PRODUCTS[name] = price
-        group = "дополнительные"
-    ORDER_DRAFTS.clear()
-    save_bot_data()
-    load_bot_data()
-    await m.answer(f"✅ Товар сохранён: <b>{escape(name)}</b> — <b>{price} ₽</b>\nРаздел: <b>{group}</b>\nВсего: <b>{len(PRODUCTS)+len(EXTRA_PRODUCTS)}</b>")
+    group = add_product(name, int(price_text))
+    mcnt, ecnt = group_counts()
+    await m.answer(f"✅ Товар сохранён: <b>{escape(name)}</b> — <b>{int(price_text)} ₽</b>\nРаздел: <b>{group}</b>\nОсновные: <b>{mcnt}</b>, дополнительные: <b>{ecnt}</b>")
 
 @dp.message(F.text.regexp(r"^/(del|dell)(@\w+)?(\s|$)"))
 async def del_cmd(m: types.Message, state: FSMContext):
-    if not await admin_only(m):
-        return
+    if not await admin_only(m): return
     arg = command_args(m.text)
     if not arg:
         await m.answer("❌ Формат: <code>/del товар</code> или <code>/del all</code>")
         return
     if arg.lower() == "all":
-        PRODUCTS.clear()
-        EXTRA_PRODUCTS.clear()
-        ORDER_DRAFTS.clear()
-        save_bot_data()
+        clear_products()
         await state.clear()
         await m.answer("✅ Весь товар удалён вместе с ценами.")
         return
-    deleted = False
-    for d in (PRODUCTS, EXTRA_PRODUCTS):
-        key = next((x for x in list(d) if x.lower() == arg.lower()), None)
-        if key:
-            d.pop(key, None)
-            deleted = True
-    ORDER_DRAFTS.clear()
-    save_bot_data()
+    ok = delete_product(arg)
     await state.clear()
-    await m.answer(f"✅ Удалено: <b>{escape(arg)}</b>" if deleted else "❌ Такой товар не найден.")
+    await m.answer(f"✅ Удалено: <b>{escape(arg)}</b>" if ok else "❌ Такой товар не найден.")
 
 @dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
 async def cash_cmd(m: types.Message, state: FSMContext):
-    if not await admin_only(m):
-        return
+    if not await admin_only(m): return
     args = command_args(m.text)
     parts = args.split(maxsplit=1)
     if not parts or parts[0].lower() == "info":
@@ -521,25 +522,23 @@ async def cash_cmd(m: types.Message, state: FSMContext):
         return
     action = parts[0].lower()
     if action == "del":
-        target = parts[1].lower() if len(parts) > 1 else ""
+        target = parts[1].lower().strip() if len(parts) > 1 else ""
         if target == "all":
-            for k in WALLETS: WALLETS[k] = []
+            clear_wallets(None)
         elif target in WALLETS:
-            WALLETS[target] = []
+            clear_wallets(target)
         else:
             await m.answer("❌ /cash del btc|usdt|ton|all")
             return
-        save_bot_data()
-        await m.answer("✅ Удалено.")
+        await m.answer("✅ Кошельки удалены.")
         return
     if action not in WALLETS:
-        await m.answer("❌ /cash btc адрес | /cash usdt адрес | /cash ton адрес")
+        await m.answer("❌ Формат: /cash btc адрес, /cash usdt адрес, /cash ton адрес")
         return
     if len(parts) > 1 and parts[1].strip():
-        WALLETS[action].append(parts[1].strip())
-        save_bot_data()
+        add_wallet(action, parts[1].strip())
         await state.clear()
-        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} добавлен. Всего: <b>{len(WALLETS[action])}</b>")
+        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} добавлен. Всего: <b>{len(get_wallets(action))}</b>")
         return
     await state.update_data(cash_type=action)
     await state.set_state(S.cash_wallet)
@@ -547,16 +546,13 @@ async def cash_cmd(m: types.Message, state: FSMContext):
 
 @dp.message(F.text.regexp(r"^/info(@\w+)?\s+"))
 async def info_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    global ABOUT_TEXT
-    ABOUT_TEXT = command_args(m.text)
-    save_bot_data()
+    if not await admin_only(m): return
+    set_about_text(command_args(m.text))
     await m.answer("✅ Текст «О боте» изменён.")
 
 @dp.message(F.text.contains("Выбрать город"))
 async def choose_city_btn(m: types.Message, state: FSMContext):
-    await send_city_menu(m, state)
+    await show_city_menu(m, state)
 
 @dp.message(F.text.contains("Мой заказ"))
 async def my_order(m: types.Message):
@@ -568,7 +564,7 @@ async def check_payment_btn(m: types.Message):
 
 @dp.message(F.text.contains("О боте"))
 async def about_btn(m: types.Message):
-    await m.answer(ABOUT_TEXT)
+    await m.answer(get_about_text())
 
 @dp.message(F.text.contains("Помощь"))
 async def support_btn(m: types.Message, state: FSMContext):
@@ -577,8 +573,7 @@ async def support_btn(m: types.Message, state: FSMContext):
 
 @dp.message(S.support_message)
 async def support_input(m: types.Message, state: FSMContext):
-    text = m.text or ""
-    if text.startswith("/") or "Выбрать город" in text or "Мой заказ" in text or "Проверить оплату" in text or "О боте" in text or "Помощь" in text:
+    if (m.text or "").startswith("/"):
         await state.clear()
         await m.answer("❌ Обращение отменено.")
         return
@@ -587,19 +582,17 @@ async def support_input(m: types.Message, state: FSMContext):
 
 @dp.message(S.cash_wallet)
 async def cash_wallet_input(m: types.Message, state: FSMContext):
-    if not await admin_only(m):
-        return
+    if not await admin_only(m): return
     data = await state.get_data()
     t = data.get("cash_type")
     wallet = (m.text or "").strip()
-    if not wallet or t not in WALLETS:
+    if t not in WALLETS or not wallet:
         await state.clear()
         await m.answer("❌ Повторите /cash.")
         return
-    WALLETS[t].append(wallet)
-    save_bot_data()
+    add_wallet(t, wallet)
     await state.clear()
-    await m.answer(f"✅ Кошелёк добавлен. Всего: <b>{len(WALLETS[t])}</b>")
+    await m.answer(f"✅ Кошелёк {WALLET_TITLES[t]} добавлен. Всего: <b>{len(get_wallets(t))}</b>")
 
 @dp.message(S.city_name)
 async def city_name_input(m: types.Message, state: FSMContext):
@@ -608,206 +601,105 @@ async def city_name_input(m: types.Message, state: FSMContext):
         await m.answer("❌ Нет такого города. Проверьте название и попробуйте ещё раз.")
         return
     await state.clear()
-    await send_products(m, state, city)
+    await show_products(m, state, city)
 
 @dp.callback_query(F.data == "menu")
 async def cb_menu(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
     await state.clear()
     await c.message.answer("🏪 Главное меню", reply_markup=main_kb())
 
-@dp.callback_query(F.data == "city_menu")
+@dp.callback_query(F.data.in_({"city_menu", "city"}))
 async def cb_city_menu(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
-    await send_city_menu(c.message, state)
-
-
-# Совместимость со старыми inline-кнопками из предыдущих версий.
-@dp.callback_query(F.data == "city")
-async def cb_city_menu_old(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
-    await send_city_menu(c.message, state)
-
-@dp.callback_query(F.data.startswith("c:"))
-async def cb_city_old(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
-    code = c.data.split(":", 1)[1]
-    city = CODE_CITIES.get(code)
-    if not city:
-        await send_city_menu(c.message, state)
-        return
-    await send_products(c.message, state, city)
+    await show_city_menu(c.message, state)
 
 @dp.callback_query(F.data == "other_city")
 async def cb_other_city(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
     await state.set_state(S.city_name)
     await c.message.answer("✍️ Напишите название города в чат.")
 
 @dp.callback_query(F.data.startswith("city:"))
 async def cb_city(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
-    city = CODE_CITIES.get(c.data.split(":", 1)[1])
+    code = c.data.split(":", 1)[1]
+    city = CODE_CITIES.get(code)
     if not city:
-        await send_city_menu(c.message, state)
+        await show_city_menu(c.message, state)
         return
-    await send_products(c.message, state, city)
+    await show_products(c.message, state, city)
 
-
-@dp.callback_query(F.data.startswith("p:"))
-async def cb_product_old(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
-    try:
-        _, cc, value = c.data.split(":", 2)
-    except Exception:
-        await c.answer("Кнопка устарела.", show_alert=True)
-        return
-
-    city = CODE_CITIES.get(cc)
+@dp.callback_query(F.data.startswith("c:"))
+async def cb_city_old(c: types.CallbackQuery, state: FSMContext):
+    code = c.data.split(":", 1)[1]
+    city = CODE_CITIES.get(code)
     if not city:
-        await send_city_menu(c.message, state)
+        await show_city_menu(c.message, state)
         return
-
-    load_bot_data()
-    item = resolve_catalog_item(city, value)
-    if not item:
-        await c.answer("Товар устарел или удалён.", show_alert=True)
-        await send_products(c.message, state, city)
-        return
-
-    districts = get_city_districts(city)
-    draft_id = str(random.randint(100000, 999999))
-    ORDER_DRAFTS[draft_id] = {"city": city, "item": item, "districts": districts, "created_at": time.time()}
-    await state.update_data(city=city, last_draft_id=draft_id)
-    await c.message.answer(
-        f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(draft_id, districts),
-    )
+    await show_products(c.message, state, city)
 
 @dp.callback_query(F.data.startswith("prod:"))
 async def cb_product(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
     try:
         _, cc, pid = c.data.split(":", 2)
     except Exception:
-        await c.answer("Кнопка устарела.", show_alert=True)
-        return
+        await c.answer("Кнопка устарела.", show_alert=True); return
     city = CODE_CITIES.get(cc)
     if not city:
-        await send_city_menu(c.message, state)
-        return
-    load_bot_data()
-    item = resolve_catalog_item(city, pid)
+        await show_city_menu(c.message, state); return
+    item = resolve_item(city, pid)
     if not item:
         await c.answer("Товар устарел или удалён.", show_alert=True)
-        await send_products(c.message, state, city)
-        return
-    districts = get_city_districts(city)
-    draft_id = str(random.randint(100000, 999999))
-    ORDER_DRAFTS[draft_id] = {"city": city, "item": item, "districts": districts, "created_at": time.time()}
+        await show_products(c.message, state, city); return
     await state.update_data(city=city)
     await c.message.answer(
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(draft_id, districts),
+        reply_markup=districts_keyboard(city, pid),
     )
 
-@dp.callback_query(F.data.startswith("back_products:"))
+@dp.callback_query(F.data.startswith("p:"))
+async def cb_product_old(c: types.CallbackQuery, state: FSMContext):
+    try:
+        _, cc, value = c.data.split(":", 2)
+    except Exception:
+        await c.answer("Кнопка устарела.", show_alert=True); return
+    city = CODE_CITIES.get(cc)
+    if not city:
+        await show_city_menu(c.message, state); return
+    item = resolve_item(city, value)
+    if not item:
+        await c.answer("Товар устарел или удалён.", show_alert=True)
+        await show_products(c.message, state, city); return
+    await state.update_data(city=city)
+    await c.message.answer(
+        f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
+        reply_markup=districts_keyboard(city, item["pid"]),
+    )
+
+@dp.callback_query(F.data.startswith("back:"))
 async def cb_back_products(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
-    draft_id = c.data.split(":", 1)[1]
-    draft = ORDER_DRAFTS.get(draft_id)
-    city = draft["city"] if draft else (await state.get_data()).get("city")
+    cc = c.data.split(":", 1)[1]
+    city = CODE_CITIES.get(cc) or (await state.get_data()).get("city")
     if city:
-        await send_products(c.message, state, city)
+        await show_products(c.message, state, city)
     else:
-        await send_city_menu(c.message, state)
-
-
-@dp.callback_query(F.data.startswith("d:"))
-async def cb_district_old(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
-    parts = c.data.split(":")
-
-    # Старый формат d:<draft_id>:<idx>
-    if len(parts) == 3 and parts[1] in ORDER_DRAFTS:
-        draft_id = parts[1]
-        idx_text = parts[2]
-        c.data = f"dist:{draft_id}:{idx_text}"
-        await cb_district(c, state)
-        return
-
-    # Старый формат d:<city_code>:<pid_or_index>:<district_idx>
-    if len(parts) == 4:
-        _, cc, value, idx_text = parts
-        city = CODE_CITIES.get(cc)
-        if not city:
-            await send_city_menu(c.message, state)
-            return
-
-        load_bot_data()
-        item = resolve_catalog_item(city, value)
-        if not item:
-            await c.answer("Товар устарел или удалён.", show_alert=True)
-            await send_products(c.message, state, city)
-            return
-
-        districts = get_city_districts(city)
-        draft_id = str(random.randint(100000, 999999))
-        ORDER_DRAFTS[draft_id] = {"city": city, "item": item, "districts": districts, "created_at": time.time()}
-        c.data = f"dist:{draft_id}:{idx_text}"
-        await cb_district(c, state)
-        return
-
-    # Очень старый формат d:<token>:<city_code>:<product_index>:<district_idx>
-    if len(parts) == 5:
-        _, _token, cc, value, idx_text = parts
-        city = CODE_CITIES.get(cc)
-        if not city:
-            await send_city_menu(c.message, state)
-            return
-
-        load_bot_data()
-        item = resolve_catalog_item(city, value)
-        if not item:
-            await c.answer("Товар устарел или удалён.", show_alert=True)
-            await send_products(c.message, state, city)
-            return
-
-        districts = get_city_districts(city)
-        draft_id = str(random.randint(100000, 999999))
-        ORDER_DRAFTS[draft_id] = {"city": city, "item": item, "districts": districts, "created_at": time.time()}
-        c.data = f"dist:{draft_id}:{idx_text}"
-        await cb_district(c, state)
-        return
-
-    await c.answer("Кнопка устарела. Выберите товар заново.", show_alert=True)
+        await show_city_menu(c.message, state)
 
 @dp.callback_query(F.data.startswith("dist:"))
-async def cb_district(c: types.CallbackQuery, state: FSMContext):
-    await c.answer()
+async def cb_dist(c: types.CallbackQuery, state: FSMContext):
     try:
-        _, draft_id, idx_text = c.data.split(":", 2)
+        _, cc, pid, idx_text = c.data.split(":", 3)
         idx = int(idx_text)
     except Exception:
-        await c.answer("Кнопка устарела.", show_alert=True)
-        return
-    draft = ORDER_DRAFTS.get(draft_id)
-    if not draft:
-        await c.answer("Выбор устарел. Выберите товар заново.", show_alert=True)
-        return
-    if idx < 0 or idx >= len(draft["districts"]):
-        await c.answer("Район устарел.", show_alert=True)
-        return
-    city = draft["city"]
-    item = draft["item"]
-    load_bot_data()
-    fresh_item = resolve_catalog_item(city, item["pid"])
-    if not fresh_item:
-        await c.answer("Товар удалён. Выберите другой.", show_alert=True)
-        await send_products(c.message, state, city)
-        return
-    item = fresh_item
-    district = draft["districts"][idx]
+        await c.answer("Кнопка устарела.", show_alert=True); return
+    city = CODE_CITIES.get(cc)
+    if not city:
+        await show_city_menu(c.message, state); return
+    item = resolve_item(city, pid)
+    if not item:
+        await c.answer("Товар удалён или устарел.", show_alert=True)
+        await show_products(c.message, state, city); return
+    districts = get_districts(city, pid)
+    if idx < 0 or idx >= len(districts):
+        await c.answer("Район устарел.", show_alert=True); return
+    district = districts[idx]
     order_id = random.randint(1000000, 9999999)
     btc, usdt, ton, rates = crypto_amounts(int(item["price"]))
     await state.update_data(order_id=order_id, t=time.time(), city=city, product=item["name"], price=item["price"], district=district)
@@ -817,9 +709,9 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
         f"Город: <b>{escape(city)}</b>\n"
         f"Район: <b>{escape(district)}</b>\n\n"
         f"Сумма: <b>{item['price']} ₽</b>\n\n"
-        f"🔹 BTC: <code>{btc}</code> → {escape(get_random_wallet('btc'))}\n"
-        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(get_random_wallet('usdt'))}\n"
-        f"🔹 TON: <code>{ton}</code> → {escape(get_random_wallet('ton'))}\n\n"
+        f"🔹 BTC: <code>{btc}</code> → {escape(random_wallet('btc'))}\n"
+        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(random_wallet('usdt'))}\n"
+        f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n\n"
         "⏰ Кошельки и сумма актуальны 30 минут.",
         reply_markup=payment_keyboard(),
     )
@@ -828,7 +720,6 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "check")
 async def cb_check(c: types.CallbackQuery, state: FSMContext):
     await c.answer("⛔ По данному заказу оплата не была получена.", show_alert=True)
-
 
 @dp.callback_query()
 async def cb_unknown(c: types.CallbackQuery):
