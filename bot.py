@@ -110,6 +110,7 @@ class S(StatesGroup):
 PRODUCTS: dict[str, int] = {}
 EXTRA_PRODUCTS: dict[str, int] = {}
 CATALOG_REVISION = 1
+CATALOG_TOKEN = str(random.randint(100000, 999999))
 
 WALLETS = {"btc": [], "usdt": [], "ton": []}
 WALLET_TITLES = {"btc": "BTC", "usdt": "USDT-(TRC20)", "ton": "TON"}
@@ -203,8 +204,14 @@ def normalize_wallets() -> None:
             WALLETS[k] = [str(x).strip() for x in v if str(x).strip()]
 
 def bump_catalog_revision() -> None:
-    global CATALOG_REVISION
+    global CATALOG_REVISION, CATALOG_TOKEN
     CATALOG_REVISION += 1
+    CATALOG_TOKEN = str(random.randint(100000, 999999))
+
+def force_empty_catalog_memory() -> None:
+    """Очищает все товары в памяти бота."""
+    PRODUCTS.clear()
+    EXTRA_PRODUCTS.clear()
 
 def save_empty_catalog() -> None:
     """Жёстко сохраняет пустой каталог во все возможные файлы сохранения."""
@@ -216,6 +223,7 @@ def save_empty_catalog() -> None:
         "about_text": ABOUT_TEXT,
         "shop_initialized": True,
         "catalog_revision": CATALOG_REVISION,
+        "catalog_token": CATALOG_TOKEN,
         "catalog_was_cleared": True,
     }
     for path in set([DATA_SAVE_FILE, LOCAL_SAVE_FILE, "/data/bot_saved_data.json", "bot_saved_data.json"]):
@@ -237,6 +245,7 @@ def save_bot_data() -> None:
         "about_text": ABOUT_TEXT,
         "shop_initialized": True,
         "catalog_revision": CATALOG_REVISION,
+        "catalog_token": CATALOG_TOKEN,
         "catalog_was_cleared": not bool(PRODUCTS or EXTRA_PRODUCTS),
     }
     for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE]:
@@ -250,7 +259,7 @@ def save_bot_data() -> None:
             logging.warning("Could not save %s: %s", path, e)
 
 def load_bot_data() -> bool:
-    global ABOUT_TEXT, CATALOG_REVISION
+    global ABOUT_TEXT, CATALOG_REVISION, CATALOG_TOKEN
     for path in [DATA_SAVE_FILE, LOCAL_SAVE_FILE]:
         if not os.path.exists(path):
             continue
@@ -272,7 +281,8 @@ def load_bot_data() -> bool:
 
         ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
         CATALOG_REVISION = int(data.get("catalog_revision", CATALOG_REVISION))
-        logging.info("Loaded %s products=%s extra=%s rev=%s", path, len(PRODUCTS), len(EXTRA_PRODUCTS), CATALOG_REVISION)
+        CATALOG_TOKEN = str(data.get("catalog_token", CATALOG_TOKEN))
+        logging.info("Loaded %s products=%s extra=%s rev=%s token=%s", path, len(PRODUCTS), len(EXTRA_PRODUCTS), CATALOG_REVISION, CATALOG_TOKEN)
         return True
 
     return False
@@ -595,14 +605,22 @@ async def del_cmd(m: types.Message, state: FSMContext):
         return
 
     if name.lower() == "all":
-        PRODUCTS.clear()
-        EXTRA_PRODUCTS.clear()
+        force_empty_catalog_memory()
         bump_catalog_revision()
+
+        # Удаляем старые файлы сохранений, чтобы из них больше ничего не подтянулось.
+        for path in set([DATA_SAVE_FILE, LOCAL_SAVE_FILE, "/data/bot_saved_data.json", "bot_saved_data.json"]):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logging.warning("Could not remove old save %s: %s", path, e)
+
         save_empty_catalog()
         await state.clear()
         await m.answer(
             "✅ Весь товар полностью удалён вместе с ценами.\n"
-            "Старые кнопки товаров теперь недействительны."
+            "Старые сохранения очищены. Старые кнопки товаров теперь недействительны."
         )
         return
 
@@ -799,7 +817,7 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
     try:
-        _, rev_text, cc, pid = c.data.split(":", 3)
+        _, rev_text, token_text, cc, pid = c.data.split(":", 4)
         rev = int(rev_text)
     except Exception:
         await c.answer("Кнопка устарела.", show_alert=True)
@@ -807,7 +825,7 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
 
     city = CODE_CITIES.get(cc)
 
-    if rev != CATALOG_REVISION:
+    if rev != CATALOG_REVISION or token_text != CATALOG_TOKEN:
         await c.answer("Каталог обновился. Выберите товар заново.", show_alert=True)
         if city:
             await show_products(c.message, state, city, edit=True)
@@ -835,6 +853,8 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
         product_pid=pid,
         districts=districts,
         order_token=token,
+        catalog_token=CATALOG_TOKEN,
+        catalog_revision=CATALOG_REVISION,
     )
 
     await safe_edit(
@@ -876,6 +896,13 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
 
     if token != data.get("order_token"):
         await c.answer("Кнопка устарела. Выберите товар заново.", show_alert=True)
+        city = data.get("city")
+        if city:
+            await show_products(c.message, state, city, edit=True)
+        return
+
+    if data.get("catalog_token") != CATALOG_TOKEN or data.get("catalog_revision") != CATALOG_REVISION:
+        await c.answer("Каталог обновился. Выберите товар заново.", show_alert=True)
         city = data.get("city")
         if city:
             await show_products(c.message, state, city, edit=True)
