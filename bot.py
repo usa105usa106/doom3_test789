@@ -30,29 +30,6 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
-RECENT_MESSAGE_IDS: set[tuple[int, int]] = set()
-RECENT_CALLBACK_IDS: set[str] = set()
-
-@dp.message.outer_middleware()
-async def drop_duplicate_messages(handler, event: types.Message, data: dict):
-    key = (event.chat.id, event.message_id)
-    if key in RECENT_MESSAGE_IDS:
-        return
-    RECENT_MESSAGE_IDS.add(key)
-    if len(RECENT_MESSAGE_IDS) > 1000:
-        RECENT_MESSAGE_IDS.clear()
-    return await handler(event, data)
-
-@dp.callback_query.outer_middleware()
-async def drop_duplicate_callbacks(handler, event: types.CallbackQuery, data: dict):
-    if event.id in RECENT_CALLBACK_IDS:
-        return
-    RECENT_CALLBACK_IDS.add(event.id)
-    if len(RECENT_CALLBACK_IDS) > 1000:
-        RECENT_CALLBACK_IDS.clear()
-    return await handler(event, data)
-
-
 DATA_SAVE_FILE = os.getenv(
     "DATA_SAVE_FILE",
     "/data/bot_saved_data.json" if os.path.exists("/data") else "bot_saved_data.json",
@@ -123,6 +100,7 @@ async def admin_only(m: types.Message) -> bool:
 class S(StatesGroup):
     city_name = State()
     cash_wallet = State()
+    support_message = State()
 
 # =====================
 # DATA
@@ -214,6 +192,7 @@ BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
 USDT_TRC20_RATE = float(os.getenv("USDT_TRC20_RATE", "90"))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
 _rates_cache = {"ts": 0, "rates": None}
+ORDER_DRAFTS: dict[str, dict] = {}
 
 # =====================
 # HELPERS
@@ -334,38 +313,28 @@ def product_id(name: str) -> str:
 
 def current_catalog(city: str) -> list[tuple[str, str, int]]:
     """
-    Каталог для выбранного города.
-
-    Логика:
+    Актуальный каталог для города.
     - первые 5 основных товаров показываются всегда;
-    - из дополнительных товаров выбирается рандомно 3-6;
-    - если дополнительных меньше 3, показываются все доступные;
-    - рандом стабильный для города и текущего списка товаров, чтобы кнопки не ломались при выборе района.
+    - из дополнительных выбираются 3-6 случайных;
+    - если дополнительных меньше 3, показываются все;
+    - товар ищется по стабильному короткому ID.
     """
     items: list[tuple[str, str, int]] = []
 
-    # Основные товары — всегда первые 5.
     for name, price in list(PRODUCTS.items())[:5]:
-        items.append((product_id("main:" + name), name, price))
+        items.append((product_id("main:" + name), name, int(price)))
 
-    # Дополнительные товары — рандомно 3-4.
     if EXTRA_PRODUCTS:
         extra_names = list(EXTRA_PRODUCTS.keys())
-
-        if len(extra_names) <= 4:
-            selected_extra = extra_names
+        if len(extra_names) <= 6:
+            selected = extra_names
         else:
-            seed = (
-                f"extras:{city}:"
-                f"{','.join(extra_names)}:"
-                f"{','.join(str(EXTRA_PRODUCTS[name]) for name in extra_names)}"
-            )
+            seed = f"{city}|{CATALOG_REVISION}|{CATALOG_TOKEN}|{','.join(extra_names)}|{','.join(str(EXTRA_PRODUCTS[n]) for n in extra_names)}"
             rnd = random.Random(seed)
-            count = rnd.randint(3, 6)
-            selected_extra = rnd.sample(extra_names, count)
+            selected = rnd.sample(extra_names, rnd.randint(3, 6))
 
-        for name in selected_extra:
-            items.append((product_id("extra:" + name), name, EXTRA_PRODUCTS[name]))
+        for name in selected:
+            items.append((product_id("extra:" + name), name, int(EXTRA_PRODUCTS[name])))
 
     return items
 
@@ -449,6 +418,7 @@ def main_kb():
             [KeyboardButton(text="📦 Мой заказ")],
             [KeyboardButton(text="💰 Проверить оплату")],
             [KeyboardButton(text="ℹ️ О боте")],
+            [KeyboardButton(text="🆘 Помощь/Поддержка")],
         ],
     )
 
@@ -466,10 +436,9 @@ def products_keyboard(city: str):
     rows.append([InlineKeyboardButton(text="🔙 Города", callback_data="city"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def districts_keyboard(city: str, product_pid: str, districts: list[str]):
-    cc = CITY_CODES.get(city, "x")
-    rows = [[InlineKeyboardButton(text=d, callback_data=f"d:{cc}:{product_pid}:{i}")] for i, d in enumerate(districts)]
-    rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_products:{cc}"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
+def districts_keyboard(districts: list[str], draft_id: str):
+    rows = [[InlineKeyboardButton(text=d, callback_data=f"d:{draft_id}:{i}")] for i, d in enumerate(districts)]
+    rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_products:{draft_id}"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def payment_keyboard():
@@ -497,8 +466,12 @@ async def show_city_menu_callback(c: types.CallbackQuery, state: FSMContext):
 
 async def show_products(message: types.Message, state: FSMContext, city: str, edit: bool):
     await state.update_data(city=city)
-    if not has_products():
-        text = "📦 Товары не добавлены. Админ должен добавить товар командой /add название цена."
+    catalog = current_catalog(city)
+    if not has_products() or not catalog:
+        text = (
+            "📦 Товары не добавлены. Админ должен добавить товар командой /add название цена.\n"
+            f"Основные: <b>{len(PRODUCTS)}</b>, дополнительные: <b>{len(EXTRA_PRODUCTS)}</b>"
+        )
         if edit:
             await safe_edit(message, text, reply_markup=city_keyboard())
         else:
@@ -757,9 +730,31 @@ async def check_payment_btn(m: types.Message):
 async def about(m: types.Message):
     await m.answer(ABOUT_TEXT)
 
+
+@dp.message(F.text.contains("Помощь"))
+async def support_btn(m: types.Message, state: FSMContext):
+    await state.set_state(S.support_message)
+    await m.answer("🆘 Напишите сообщение в поддержку одним сообщением.")
+
 # =====================
 # STATE INPUTS
 # =====================
+
+
+@dp.message(S.support_message)
+async def support_message_input(m: types.Message, state: FSMContext):
+    text = (m.text or "").strip()
+
+    if text.startswith("/") or "Выбрать город" in text or "Мой заказ" in text or "Проверить оплату" in text or "О боте" in text:
+        await state.clear()
+        await m.answer("❌ Обращение в поддержку отменено.")
+        return
+
+    await state.clear()
+    await m.answer(
+        "✅ Ваш запрос будет рассмотрен в течение 1-3 дней, ожидайте, вам придёт ответ. "
+        "Не повторяйте ваш запрос несколько раз."
+    )
 
 @dp.message(S.cash_wallet)
 async def cash_wallet_input(m: types.Message, state: FSMContext):
@@ -864,30 +859,39 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
         return
 
     catalog = current_catalog(city)
-    found = next(((name, price) for item_pid, name, price in catalog if item_pid == pid), None)
-
+    found = next(((item_pid, name, price) for item_pid, name, price in catalog if item_pid == pid), None)
     if not found:
         await c.answer("Товар устарел или удалён. Выберите товар заново.", show_alert=True)
         await show_products(c.message, state, city, edit=True)
         return
 
-    product, price = found
+    _, product, price = found
     districts = get_city_districts(city)
+    draft_id = str(random.randint(100000, 999999))
 
-    await state.update_data(
-        city=city,
-        product=product,
-        price=price,
-        product_pid=pid,
-        districts=districts,
-        catalog_token=CATALOG_TOKEN,
-        catalog_revision=CATALOG_REVISION,
-    )
+    ORDER_DRAFTS[draft_id] = {
+        "city": city,
+        "product": product,
+        "price": int(price),
+        "pid": pid,
+        "districts": districts,
+        "created_at": time.time(),
+        "catalog_revision": CATALOG_REVISION,
+        "catalog_token": CATALOG_TOKEN,
+    }
+
+    # Чистим старые черновики.
+    now = time.time()
+    for key in list(ORDER_DRAFTS.keys()):
+        if now - ORDER_DRAFTS[key].get("created_at", now) > 1800:
+            ORDER_DRAFTS.pop(key, None)
+
+    await state.update_data(city=city, last_draft_id=draft_id)
 
     await safe_edit(
         c.message,
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b> — <b>{price} ₽</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(city, pid, districts),
+        reply_markup=districts_keyboard(districts, draft_id),
     )
 
 @dp.callback_query(F.data.startswith("back_products"))
@@ -898,7 +902,11 @@ async def cb_back_products(c: types.CallbackQuery, state: FSMContext):
     city = None
     parts = c.data.split(":", 1)
     if len(parts) == 2:
-        city = CODE_CITIES.get(parts[1])
+        value = parts[1]
+        if value in ORDER_DRAFTS:
+            city = ORDER_DRAFTS[value].get("city")
+        else:
+            city = CODE_CITIES.get(value)
 
     if not city:
         city = data.get("city")
@@ -914,36 +922,37 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
 
     try:
-        _, cc, pid, district_idx_text = c.data.split(":", 3)
+        _, draft_id, district_idx_text = c.data.split(":", 2)
         district_idx = int(district_idx_text)
     except Exception:
         await c.answer("Кнопка устарела.", show_alert=True)
         return
 
-    city = CODE_CITIES.get(cc)
-    if not city:
-        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+    draft = ORDER_DRAFTS.get(draft_id)
+    if not draft:
+        await c.answer("Выбор устарел. Выберите товар заново.", show_alert=True)
+        data = await state.get_data()
+        city = data.get("city")
+        if city:
+            await show_products(c.message, state, city, edit=True)
         return
 
-    catalog = current_catalog(city)
-    found = next(((name, price) for item_pid, name, price in catalog if item_pid == pid), None)
-    if not found:
-        await c.answer("Товар удалён или каталог обновился. Выберите товар заново.", show_alert=True)
-        await show_products(c.message, state, city, edit=True)
-        return
-
-    # Берём районы из state, если они подходят этому товару, иначе строим заново.
-    data = await state.get_data()
-    districts = data.get("districts")
-    if not districts or data.get("city") != city or data.get("product_pid") != pid:
-        districts = get_city_districts(city)
-
+    districts = draft.get("districts") or []
     if district_idx < 0 or district_idx >= len(districts):
         await c.answer("Район устарел. Выберите товар заново.", show_alert=True)
-        await show_products(c.message, state, city, edit=True)
+        await show_products(c.message, state, draft["city"], edit=True)
         return
 
-    product, price = found
+    # Если товар уже удалён — не открываем старую оплату.
+    catalog = current_catalog(draft["city"])
+    if not any(item_pid == draft["pid"] for item_pid, _, _ in catalog):
+        await c.answer("Товар был удалён. Выберите другой товар.", show_alert=True)
+        await show_products(c.message, state, draft["city"], edit=True)
+        return
+
+    city = draft["city"]
+    product = draft["product"]
+    price = int(draft["price"])
     district = districts[district_idx]
     order_id = random.randint(1000000, 9999999)
 
@@ -951,13 +960,12 @@ async def cb_district(c: types.CallbackQuery, state: FSMContext):
         city=city,
         product=product,
         price=price,
-        product_pid=pid,
         district=district,
         order_id=order_id,
         t=time.time(),
     )
 
-    btc, usdt, ton = get_crypto_amounts(int(price))
+    btc, usdt, ton = get_crypto_amounts(price)
 
     text = (
         f"🆔 <b>Заказ №{order_id}</b>\n\n"
@@ -1010,9 +1018,7 @@ async def unknown_command(m: types.Message):
         await m.answer("⛔ Эта команда доступна только администратору бота.")
 
 async def main():
-    # Сбрасываем старые pending updates после redeploy, чтобы бот не повторял старые сообщения.
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
