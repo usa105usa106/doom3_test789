@@ -841,6 +841,9 @@ def products_info_text() -> str:
         lines.append("<b>Дополнительные товары:</b>\nнет товаров")
     return "\n".join(lines)
 
+def has_products() -> bool:
+    return bool(PRODUCTS or EXTRA_PRODUCTS)
+
 def fmt_amount(value: float, decimals: int) -> str:
     return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
 
@@ -912,7 +915,7 @@ def products_keyboard(city: str):
     cc = city_code(city)
     rows = []
     for i, (p, price) in enumerate(products.items()):
-        rows.append([InlineKeyboardButton(text=f"{p} — {price} ₽", callback_data=f"p:{DATA_VERSION}:{cc}:{i}")])
+        rows.append([InlineKeyboardButton(text=f"{p} — {price} ₽", callback_data=f"p:{cc}:{i}")])
     rows.append([
         InlineKeyboardButton(text="🔙 Города", callback_data="city"),
         InlineKeyboardButton(text="🏠 Меню", callback_data="menu"),
@@ -947,156 +950,8 @@ except Exception as e:
 # START / MENU
 # =====================
 
-@dp.message(F.text.regexp(r"^/start(@\w+)?$"))
-async def start(m: types.Message, state: FSMContext):
-    if m.from_user:
-        uid = int(m.from_user.id)
-
-        # Если пользователь указан в HARD_ADMIN_IDS, гарантированно добавляем его в админы.
-        if uid in {int(x) for x in HARD_ADMIN_IDS} and uid not in ADMIN_IDS:
-            ADMIN_IDS.add(uid)
-            _save_admin_ids()
-            logging.info("Hard admin restored: %s", uid)
-
-        # Если админы вообще не заданы, первый пользователь /start становится админом.
-        if not ADMIN_IDS:
-            ADMIN_IDS.add(uid)
-            _save_admin_ids()
-            logging.info("Auto admin created: %s", uid)
-            await m.answer(
-                "✅ Админ не был задан, поэтому вы назначены администратором.\n"
-                f"Ваш Telegram ID: <code>{uid}</code>"
-            )
-
-    await state.clear()
-    await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=main_kb())
-
-@dp.message(F.text == "🏙 Выбрать город")
-async def choose_city_btn(m: types.Message, state: FSMContext):
-    await state.set_state(S.city)
-    await m.answer("🏙 Выберите город:", reply_markup=city_keyboard())
-
-@dp.message(F.text == "📦 Мой заказ")
-async def my_order(m: types.Message):
-    await m.answer("📦 У вас ещё нет покупок, сначала произведите оплату.")
-
-@dp.message(F.text == "💰 Проверить оплату")
-async def check_payment_btn(m: types.Message):
-    await m.answer("💰 Отправьте боту в чат номер вашего заказа (только цифры). Внимание!!! Через 24 часа после покупки проверка заказа будет недоступна.")
-
-@dp.message(F.text == "ℹ️ О боте")
-async def about(m: types.Message):
-    await m.answer(ABOUT_TEXT)
-
-# =====================
-# ADMIN COMMANDS
-# =====================
-
-@dp.message(F.text.regexp(r"^/adminid(@\w+)?$"))
-async def admin_id_cmd(m: types.Message):
-    user_id = m.from_user.id if m.from_user else None
-    status = "✅ вы админ" if is_admin(user_id) else "⛔ вы не админ"
-    await m.answer(f"Ваш Telegram ID: <code>{user_id}</code>\nСтатус: {status}")
-
-@dp.message(F.text.regexp(r"^/help(@\w+)?$"))
-async def help_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    await m.answer(
-        "📋 <b>Список команд</b>\n\n"
-        "/start — открыть главное меню\n"
-        "/help — список команд администратора\n"
-        "/adminid — показать ваш Telegram ID и статус админа\n"
-        "/add товар цена — добавить товар, пример: <code>/add книга 500</code>\n"
-        "/add info — показать весь товар с ценами\n"
-        "/del товар — удалить товар, пример: <code>/del книга</code>\n"
-        "/del all или /dell all — удалить весь товар\n"
-        "/info текст — изменить сообщение кнопки «О боте»\n"
-        "/cash info — показать все кошельки\n"
-        "/cash btc адрес — добавить BTC кошелёк\n"
-        "/cash usdt адрес — добавить USDT-(TRC20) кошелёк\n"
-        "/cash ton адрес — добавить TON кошелёк\n"
-        "/cash del btc|usdt|ton — удалить все кошельки выбранного типа\n"
-        "/cash del all — удалить все кошельки\n"
-        "/save — сохранить все текущие изменения\n"
-        "/load — загрузить последние сохранённые значения\n"
-        "Поддерживается ручной ввод города только из списка 300+ городов"
-    )
-
-@dp.message(F.text.regexp(r"^/save(@\w+)?$"))
-async def save_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    try:
-        save_bot_data()
-        await m.answer(f"✅ Все изменения сохранены.\nФайл: <code>{escape(DATA_SAVE_FILE)}</code>")
-    except Exception as e:
-        logging.exception("Save failed")
-        await m.answer(f"❌ Не удалось сохранить данные: <code>{escape(str(e))}</code>")
-
-@dp.message(F.text.regexp(r"^/load(@\w+)?$"))
-async def load_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-    try:
-        if not load_bot_data():
-            await m.answer("❌ Сохранение не найдено. Сначала используйте /save.")
-            return
-        await m.answer("✅ Последние сохранённые значения загружены.")
-    except Exception as e:
-        logging.exception("Load failed")
-        await m.answer(f"❌ Не удалось загрузить данные: <code>{escape(str(e))}</code>")
-
-@dp.message(F.text.regexp(r"^/add(@\w+)?(\s|$)"))
-async def add_product_cmd(m: types.Message):
-    if not await admin_only(m):
-        return
-
-    rest = command_args(m.text)
-    if rest.lower() == "info":
-        await m.answer(products_info_text())
-        return
-
-    if not rest or len(rest.split()) < 2:
-        await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>\nСписок товаров: <code>/add info</code>")
-        return
-
-    name, price_text = rest.rsplit(maxsplit=1)
-    if not price_text.isdigit() or int(price_text) <= 0:
-        await m.answer("❌ Цена должна быть положительным числом. Пример: <code>/add книга 500</code>")
-        return
-
-    product_name = name.strip().capitalize()
-    price = int(price_text)
-
-    # Если товар уже есть — обновляем цену там, где он находится.
-    product_key = next((x for x in PRODUCTS if x.lower() == product_name.lower()), None)
-    extra_key = next((x for x in EXTRA_PRODUCTS if x.lower() == product_name.lower()), None)
-
-    if product_key:
-        PRODUCTS[product_key] = price
-        target_group = "основные товары"
-    elif extra_key:
-        EXTRA_PRODUCTS[extra_key] = price
-        target_group = "дополнительные товары"
-    else:
-        # Первые 5 добавленных товаров попадают в основные, остальные — в дополнительные.
-        if len(PRODUCTS) < 5:
-            PRODUCTS[product_name] = price
-            target_group = "основные товары"
-        else:
-            EXTRA_PRODUCTS[product_name] = price
-            target_group = "дополнительные товары"
-
-    bump_data_version()
-    save_bot_data()
-    await m.answer(
-        f"✅ Товар сохранён: <b>{escape(product_name)}</b> — <b>{price} ₽</b>\n"
-        f"Раздел: <b>{target_group}</b>"
-    )
-
-@dp.message(F.text.regexp(r"^/del(@\w+)?\s+|^/dell(@\w+)?\s+"))
-async def del_product_cmd(m: types.Message):
+@dp.message(F.text.regexp(r"^/(del|dell)(@\w+)?(\s|$)"))
+async def del_product_cmd(m: types.Message, state: FSMContext):
     if not await admin_only(m):
         return
     name = command_args(m.text)
@@ -1109,7 +964,8 @@ async def del_product_cmd(m: types.Message):
         EXTRA_PRODUCTS.clear()
         bump_data_version()
         save_bot_data()
-        await m.answer("✅ Весь товар удалён.")
+        await state.clear()
+        await m.answer("✅ Весь товар полностью удалён: основные и дополнительные товары очищены вместе с ценами.")
         return
 
     key = next((x for x in list(PRODUCTS.keys()) if x.lower() == name.lower()), None)
@@ -1254,6 +1110,9 @@ async def city_name_from_chat(m: types.Message, state: FSMContext):
 
     await state.update_data(city=city)
     await state.set_state(S.product)
+    if not has_products():
+        await m.answer("📦 Товары не добавлены. Админ должен добавить товар командой /add название цена.")
+        return
     await m.answer(f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
 
 @dp.callback_query(F.data.startswith("c:"))
@@ -1267,6 +1126,9 @@ async def city_selected(c: types.CallbackQuery, state: FSMContext):
 
     await state.update_data(city=city)
     await state.set_state(S.product)
+    if not has_products():
+        await safe_edit(c.message, "📦 Товары не добавлены. Админ должен добавить товар командой /add название цена.", reply_markup=city_keyboard())
+        return
     await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
 
 @dp.callback_query(F.data.startswith("p:"))
@@ -1275,15 +1137,18 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
     try:
-        _, version_text, cc, product_index_text = c.data.split(":", 3)
-        callback_version = int(version_text)
+        _, cc, product_index_text = c.data.split(":", 2)
         product_index = int(product_index_text)
-        if callback_version != DATA_VERSION:
-            raise ValueError("old product keyboard")
     except Exception:
-        await c.answer("Кнопка устарела. Выберите город заново.", show_alert=True)
-        await state.set_state(S.city)
-        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+        await c.answer("Кнопка устарела. Выберите товар заново.", show_alert=True)
+        data = await state.get_data()
+        city = data.get("city")
+        if city:
+            await state.set_state(S.product)
+            await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+        else:
+            await state.set_state(S.city)
+            await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
         return
 
     city = city_from_code(cc, data)
@@ -1295,6 +1160,10 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
 
     products = city_products(city)
     product_items = list(products.items())
+    if not product_items:
+        await c.answer("Товары не добавлены.", show_alert=True)
+        await safe_edit(c.message, "📦 Товары не добавлены. Админ должен добавить товар командой /add название цена.", reply_markup=city_keyboard())
+        return
     if product_index < 0 or product_index >= len(product_items):
         await c.answer("Товар устарел. Выберите товар заново.", show_alert=True)
         await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
@@ -1330,6 +1199,9 @@ async def back_products(c: types.CallbackQuery, state: FSMContext):
         await safe_edit(c.message, "🏙 Сначала выберите город:", reply_markup=city_keyboard())
         return
     await state.set_state(S.product)
+    if not has_products():
+        await safe_edit(c.message, "📦 Товары не добавлены. Админ должен добавить товар командой /add название цена.", reply_markup=city_keyboard())
+        return
     await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
 
 @dp.callback_query(F.data.startswith("d:"))
