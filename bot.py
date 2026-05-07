@@ -269,17 +269,40 @@ def has_products() -> bool:
 def product_id(name: str) -> str:
     return hashlib.blake2s(name.encode("utf-8"), digest_size=4).hexdigest()
 
-def current_catalog(city: str) -> list[tuple[str, int, str]]:
-    items: list[tuple[str, int, str]] = []
-    for name, price in PRODUCTS.items():
-        items.append((product_id(name), name, price))
+def current_catalog(city: str) -> list[tuple[str, str, int]]:
+    """
+    Каталог для выбранного города.
 
+    Логика:
+    - первые 5 основных товаров показываются всегда;
+    - из дополнительных товаров выбирается рандомно 3-6;
+    - если дополнительных меньше 3, показываются все доступные;
+    - рандом стабильный для города и текущего списка товаров, чтобы кнопки не ломались при выборе района.
+    """
+    items: list[tuple[str, str, int]] = []
+
+    # Основные товары — всегда первые 5.
+    for name, price in list(PRODUCTS.items())[:5]:
+        items.append((product_id("main:" + name), name, price))
+
+    # Дополнительные товары — рандомно 3-4.
     if EXTRA_PRODUCTS:
-        seed = f"extras:{city}:{','.join(EXTRA_PRODUCTS.keys())}:{','.join(map(str, EXTRA_PRODUCTS.values()))}"
-        rnd = random.Random(seed)
-        count = min(rnd.randint(3, 6), len(EXTRA_PRODUCTS))
-        for name in rnd.sample(list(EXTRA_PRODUCTS.keys()), count):
-            items.append((product_id(name), name, EXTRA_PRODUCTS[name]))
+        extra_names = list(EXTRA_PRODUCTS.keys())
+
+        if len(extra_names) <= 4:
+            selected_extra = extra_names
+        else:
+            seed = (
+                f"extras:{city}:"
+                f"{','.join(extra_names)}:"
+                f"{','.join(str(EXTRA_PRODUCTS[name]) for name in extra_names)}"
+            )
+            rnd = random.Random(seed)
+            count = rnd.randint(3, 6)
+            selected_extra = rnd.sample(extra_names, count)
+
+        for name in selected_extra:
+            items.append((product_id("extra:" + name), name, EXTRA_PRODUCTS[name]))
 
     return items
 
@@ -331,10 +354,24 @@ def wallets_text(t: str) -> str:
     return "\n".join(f"• <code>{escape(w)}</code>" for w in wallets) if wallets else "не задан"
 
 def products_info_text() -> str:
-    lines = ["📦 <b>Весь товар с ценами</b>\n", "<b>Основные товары:</b>"]
-    lines.extend([f"• {escape(n)} — <b>{p} ₽</b>" for n, p in PRODUCTS.items()] or ["нет товаров"])
-    lines.extend(["", "<b>Дополнительные товары:</b>"])
-    lines.extend([f"• {escape(n)} — <b>{p} ₽</b>" for n, p in EXTRA_PRODUCTS.items()] or ["нет товаров"])
+    total = len(PRODUCTS) + len(EXTRA_PRODUCTS)
+    lines = [f"📦 <b>Весь товар с ценами</b> — всего: <b>{total}</b>\n"]
+
+    lines.append(f"<b>Основные товары ({len(PRODUCTS)}):</b>")
+    if PRODUCTS:
+        for name, price in PRODUCTS.items():
+            lines.append(f"• {escape(name)} — <b>{price} ₽</b>")
+    else:
+        lines.append("нет товаров")
+
+    lines.append("")
+    lines.append(f"<b>Дополнительные товары ({len(EXTRA_PRODUCTS)}):</b>")
+    if EXTRA_PRODUCTS:
+        for name, price in EXTRA_PRODUCTS.items():
+            lines.append(f"• {escape(name)} — <b>{price} ₽</b>")
+    else:
+        lines.append("нет товаров")
+
     return "\n".join(lines)
 
 # =====================
@@ -509,7 +546,11 @@ async def add_cmd(m: types.Message):
         group = "дополнительные товары"
 
     save_bot_data()
-    await m.answer(f"✅ Товар сохранён: <b>{escape(name)}</b> — <b>{price} ₽</b>\nРаздел: <b>{group}</b>")
+    await m.answer(
+        f"✅ Товар сохранён: <b>{escape(name)}</b> — <b>{price} ₽</b>\n"
+        f"Раздел: <b>{group}</b>\n"
+        f"Всего товаров: <b>{len(PRODUCTS) + len(EXTRA_PRODUCTS)}</b>"
+    )
 
 @dp.message(F.text.regexp(r"^/(del|dell)(@\w+)?(\s|$)"))
 async def del_cmd(m: types.Message, state: FSMContext):
@@ -653,10 +694,36 @@ async def cash_wallet_input(m: types.Message, state: FSMContext):
 
 @dp.message(S.city_name)
 async def city_name_input(m: types.Message, state: FSMContext):
-    city = find_supported_city(m.text or "")
+    text = (m.text or "").strip()
+
+    # Если пользователь передумал и нажал кнопку меню, не пытаемся считать её городом.
+    if "Выбрать город" in text:
+        await show_city_menu_message(m, state)
+        return
+    if "Мой заказ" in text:
+        await state.clear()
+        await my_order(m)
+        return
+    if "Проверить оплату" in text:
+        await state.clear()
+        await check_payment_btn(m)
+        return
+    if "О боте" in text:
+        await state.clear()
+        await about(m)
+        return
+    if text.startswith("/"):
+        await state.clear()
+        await m.answer("❌ Ввод города отменён. Повторите команду или выберите действие в меню.")
+        return
+
+    city = find_supported_city(text)
     if not city:
         await m.answer("❌ Нет такого города. Проверьте название и попробуйте ещё раз.")
         return
+
+    # После успешного ручного выбора выходим из состояния ввода города.
+    await state.clear()
     await show_products(m, state, city, edit=False)
 
 # =====================
