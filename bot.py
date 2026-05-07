@@ -39,7 +39,7 @@ DATA_SAVE_FILE = os.getenv(
 # ADMIN CONFIG
 # =====================
 
-HARD_ADMIN_IDS: list[int] = []
+HARD_ADMIN_IDS: list[int] = [5172121123]  # основной админ
 
 def _load_admin_ids() -> set[int]:
     raw_values = [
@@ -912,14 +912,25 @@ except Exception as e:
 
 @dp.message(F.text.regexp(r"^/start(@\w+)?$"))
 async def start(m: types.Message, state: FSMContext):
-    if not ADMIN_IDS and m.from_user:
-        ADMIN_IDS.add(int(m.from_user.id))
-        _save_admin_ids()
-        logging.info("Auto admin created: %s", m.from_user.id)
-        await m.answer(
-            "✅ Админ не был задан, поэтому вы назначены администратором.\n"
-            f"Ваш Telegram ID: <code>{m.from_user.id}</code>"
-        )
+    if m.from_user:
+        uid = int(m.from_user.id)
+
+        # Если пользователь указан в HARD_ADMIN_IDS, гарантированно добавляем его в админы.
+        if uid in {int(x) for x in HARD_ADMIN_IDS} and uid not in ADMIN_IDS:
+            ADMIN_IDS.add(uid)
+            _save_admin_ids()
+            logging.info("Hard admin restored: %s", uid)
+
+        # Если админы вообще не заданы, первый пользователь /start становится админом.
+        if not ADMIN_IDS:
+            ADMIN_IDS.add(uid)
+            _save_admin_ids()
+            logging.info("Auto admin created: %s", uid)
+            await m.answer(
+                "✅ Админ не был задан, поэтому вы назначены администратором.\n"
+                f"Ваш Telegram ID: <code>{uid}</code>"
+            )
+
     await state.clear()
     await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=main_kb())
 
@@ -944,6 +955,12 @@ async def about(m: types.Message):
 # ADMIN COMMANDS
 # =====================
 
+@dp.message(F.text.regexp(r"^/adminid(@\w+)?$"))
+async def admin_id_cmd(m: types.Message):
+    user_id = m.from_user.id if m.from_user else None
+    status = "✅ вы админ" if is_admin(user_id) else "⛔ вы не админ"
+    await m.answer(f"Ваш Telegram ID: <code>{user_id}</code>\nСтатус: {status}")
+
 @dp.message(F.text.regexp(r"^/help(@\w+)?$"))
 async def help_cmd(m: types.Message):
     if not await admin_only(m):
@@ -952,6 +969,7 @@ async def help_cmd(m: types.Message):
         "📋 <b>Список команд</b>\n\n"
         "/start — открыть главное меню\n"
         "/help — список команд администратора\n"
+        "/adminid — показать ваш Telegram ID и статус админа\n"
         "/add товар цена — добавить товар, пример: <code>/add книга 500</code>\n"
         "/add info — показать весь товар с ценами\n"
         "/del товар — удалить товар, пример: <code>/del книга</code>\n"
