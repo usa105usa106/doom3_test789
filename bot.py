@@ -9,6 +9,7 @@ import re
 from html import escape
 
 from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
@@ -1317,6 +1318,14 @@ async def order_number_from_chat(m: types.Message):
         await m.answer("⛔ По данному заказу оплата не была получена, сначала оплатите и повторите запрос.")
     elif 1 <= len(digits) <= 6 or 8 <= len(digits) <= 20:
         await m.answer("❌ Неверный ввод, убедитесь, что вы вводите 7 цифр вашего заказа.")
+
+@dp.message(F.text.startswith("/"))
+async def unknown_or_forbidden_command(m: types.Message):
+    if not is_admin(m.from_user.id if m.from_user else None):
+        await m.answer("⛔ Эта команда доступна только администратору бота.")
+    else:
+        await m.answer("❌ Неизвестная команда. Используйте /help")
+
 
 @dp.message(F.text.startswith("/"))
 async def unknown_or_forbidden_command(m: types.Message):
