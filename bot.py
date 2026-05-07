@@ -27,6 +27,19 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
+# ID администраторов через запятую в переменной окружения ADMIN_IDS, например:
+# ADMIN_IDS=123456789,987654321
+ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()}
+
+def is_admin(user_id: int | None) -> bool:
+    return bool(user_id and user_id in ADMIN_IDS)
+
+async def admin_only(m: types.Message) -> bool:
+    if is_admin(m.from_user.id if m.from_user else None):
+        return True
+    await m.answer("⛔ Эта команда доступна только администратору бота.")
+    return False
+
 # =====================
 # STATES
 # =====================
@@ -36,6 +49,7 @@ class S(StatesGroup):
     product = State()
     district = State()
     city_name = State()
+    cash_wallet = State()
 
 # =====================
 # DATA
@@ -196,9 +210,16 @@ def get_city_districts(city: str) -> list[str]:
     return ["Центр"] + random_districts
 
 # WALLETS
-BTC_WALLET = "bc1qexample"
-USDT_TRC20_WALLET = "TXexample"
-TON_WALLET = "UQexample"
+WALLETS = {
+    "btc": "bc1qexample",
+    "usdt": "TXexample",
+    "ton": "UQexample",
+}
+WALLET_TITLES = {
+    "btc": "BTC",
+    "usdt": "USDT-(TRC20)",
+    "ton": "TON",
+}
 
 # Резервные курсы на случай, если сервер не сможет получить актуальный курс из интернета.
 # Сумма в криптовалюте считается строго так: цена_в_рублях / курс_криптовалюты_в_рублях.
@@ -291,18 +312,27 @@ async def about(m: types.Message):
 
 @dp.message(F.text == "/help")
 async def help_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
     await m.answer(
         "📋 <b>Список команд</b>\n\n"
         "/start — открыть главное меню\n"
-        "/help — список команд\n"
+        "/help — список команд администратора\n"
         "/add товар цена — добавить товар, пример: <code>/add книга 500</code>\n"
         "/del товар — удалить товар, пример: <code>/del книга</code>\n"
         "/del all — удалить весь товар\n"
-        "/info текст — изменить сообщение кнопки «О боте»"
+        "/info текст — изменить сообщение кнопки «О боте»\n"
+        "/cash btc — задать BTC кошелёк\n"
+        "/cash usdt — задать USDT-(TRC20) кошелёк\n"
+        "/cash ton — задать TON кошелёк\n"
+        "/cash del btc|usdt|ton — удалить выбранный кошелёк\n"
+        "/cash del all — удалить все кошельки"
     )
 
 @dp.message(F.text.startswith("/add "))
 async def add_product_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
     parts = m.text.split(maxsplit=2)
     if len(parts) < 3:
         await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>")
@@ -319,6 +349,8 @@ async def add_product_cmd(m: types.Message):
 
 @dp.message(F.text.startswith("/del "))
 async def del_product_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
     name = m.text[5:].strip()
     if not name:
         await m.answer("❌ Неверный формат. Пример: <code>/del книга</code>")
@@ -348,6 +380,8 @@ async def del_product_cmd(m: types.Message):
 
 @dp.message(F.text.startswith("/info "))
 async def info_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
     global ABOUT_TEXT
     text = m.text[6:].strip()
     if not text:
@@ -355,6 +389,83 @@ async def info_cmd(m: types.Message):
         return
     ABOUT_TEXT = text
     await m.answer("✅ Сообщение кнопки «О боте» изменено.")
+
+
+@dp.message(F.text.startswith("/cash"))
+async def cash_cmd(m: types.Message, state: FSMContext):
+    if not await admin_only(m):
+        return
+
+    parts = m.text.split(maxsplit=3)
+    if len(parts) == 1:
+        await m.answer(
+            "💳 <b>Кошельки</b>\n\n"
+            f"BTC: <code>{escape(WALLETS.get('btc') or 'не задан')}</code>\n"
+            f"USDT-(TRC20): <code>{escape(WALLETS.get('usdt') or 'не задан')}</code>\n"
+            f"TON: <code>{escape(WALLETS.get('ton') or 'не задан')}</code>\n\n"
+            "Команды:\n"
+            "<code>/cash btc</code> — задать BTC кошелёк\n"
+            "<code>/cash usdt</code> — задать USDT-(TRC20) кошелёк\n"
+            "<code>/cash ton</code> — задать TON кошелёк\n"
+            "<code>/cash del btc</code> — удалить BTC кошелёк\n"
+            "<code>/cash del all</code> — удалить все кошельки"
+        )
+        return
+
+    action = parts[1].lower()
+
+    if action == "del":
+        if len(parts) < 3:
+            await m.answer("❌ Укажите, какой кошелёк удалить: <code>/cash del btc</code>, <code>/cash del usdt</code>, <code>/cash del ton</code> или <code>/cash del all</code>")
+            return
+        target = parts[2].lower()
+        if target == "all":
+            for key in WALLETS:
+                WALLETS[key] = ""
+            await m.answer("✅ Все кошельки удалены.")
+            return
+        if target not in WALLETS:
+            await m.answer("❌ Можно удалить только: btc, usdt, ton или all.")
+            return
+        WALLETS[target] = ""
+        await m.answer(f"✅ Кошелёк {WALLET_TITLES[target]} удалён.")
+        return
+
+    if action not in WALLETS:
+        await m.answer("❌ Неверная команда. Используйте: <code>/cash btc</code>, <code>/cash usdt</code>, <code>/cash ton</code>, <code>/cash del ...</code>")
+        return
+
+    if len(parts) >= 3:
+        wallet = " ".join(parts[2:]).strip()
+        if not wallet:
+            await m.answer("❌ Кошелёк не может быть пустым.")
+            return
+        WALLETS[action] = wallet
+        await state.clear()
+        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} сохранён: <code>{escape(wallet)}</code>")
+        return
+
+    await state.update_data(cash_type=action)
+    await state.set_state(S.cash_wallet)
+    await m.answer(f"✍️ Отправьте адрес кошелька {WALLET_TITLES[action]} в чат.")
+
+@dp.message(S.cash_wallet)
+async def cash_wallet_from_chat(m: types.Message, state: FSMContext):
+    if not await admin_only(m):
+        return
+    data = await state.get_data()
+    cash_type = data.get("cash_type")
+    if cash_type not in WALLETS:
+        await state.clear()
+        await m.answer("❌ Тип кошелька не найден. Повторите команду /cash.")
+        return
+    wallet = m.text.strip()
+    if not wallet:
+        await m.answer("❌ Кошелёк не может быть пустым.")
+        return
+    WALLETS[cash_type] = wallet
+    await state.clear()
+    await m.answer(f"✅ Кошелёк {WALLET_TITLES[cash_type]} сохранён: <code>{escape(wallet)}</code>")
 
 # =====================
 # INLINE HANDLERS
@@ -465,9 +576,9 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
         f"Город: <b>{city}</b>\n"
         f"Район: <b>{district}</b>\n\n"
         f"Сумма: <b>{price} ₽</b>\n\n"
-        f"🔹 BTC: <code>{btc}</code> → {BTC_WALLET}\n"
-        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {USDT_TRC20_WALLET}\n"
-        f"🔹 TON: <code>{ton}</code> → {TON_WALLET}\n\n"
+        f"🔹 BTC: <code>{btc}</code> → {escape(WALLETS.get("btc") or "не задан")}\n"
+        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(WALLETS.get("usdt") or "не задан")}\n"
+        f"🔹 TON: <code>{ton}</code> → {escape(WALLETS.get("ton") or "не задан")}\n\n"
         f"⏰ Внимание!!! Для покупки товара, оплатите точную сумму на любой из этих кошельков. Бот находит оплату автоматически после первого подтверждения транзакции в сети. В целях идентификации платежа - кошельки и сумма актуальны 30 минут. Если у вас нет криптовалюты, её можно купить за рубли через обменник bestchange.biz , для создания кошельков используйте trust wallet, скачать можно через google play/app store."
     )
 
@@ -499,6 +610,14 @@ async def check_payment(c: types.CallbackQuery, state: FSMContext):
         await c.answer("⛔ Время на оплату вышло (30 минут)", show_alert=True)
         return
     await c.answer("⛔ По данному заказу оплата не была получена, сначала оплатите и повторите запрос.", show_alert=True)
+
+
+@dp.message(F.text.startswith("/"))
+async def unknown_or_forbidden_command(m: types.Message):
+    if not is_admin(m.from_user.id if m.from_user else None):
+        await m.answer("⛔ Эта команда доступна только администратору бота.")
+    else:
+        await m.answer("❌ Неизвестная команда. Используйте /help")
 
 # =====================
 # RUN
