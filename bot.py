@@ -5,6 +5,7 @@ import random
 import time
 import json
 import urllib.request
+import re
 from html import escape
 
 from aiogram import Bot, Dispatcher, types, F
@@ -38,6 +39,17 @@ dp = Dispatcher(storage=MemoryStorage())
 HARD_ADMIN_IDS: list[int] = []
 
 def _load_admin_ids() -> set[int]:
+    """
+    Надёжно читает ID админов из переменных окружения и из HARD_ADMIN_IDS.
+
+    Поддерживает варианты:
+    ADMIN_IDS=123456789
+    ADMIN_IDS=123456789,987654321
+    ADMIN_IDS=[123456789, 987654321]
+    ADMIN_ID=123456789
+    admin_ids=123456789
+    amdin_ids=123456789  # частая опечатка
+    """
     raw_values = [
         os.getenv("ADMIN_IDS", ""),
         os.getenv("ADMIN_ID", ""),
@@ -46,28 +58,66 @@ def _load_admin_ids() -> set[int]:
         os.getenv("amdin_ids", ""),
         os.getenv("AMDIN_IDS", ""),
         os.getenv("ADMINS", ""),
+        os.getenv("BOT_ADMIN_IDS", ""),
+        os.getenv("BOT_ADMIN_ID", ""),
     ]
-    ids: set[int] = set(HARD_ADMIN_IDS)
+
+    ids: set[int] = set()
+    for item in HARD_ADMIN_IDS:
+        try:
+            ids.add(int(item))
+        except (TypeError, ValueError):
+            pass
+
     for raw in raw_values:
-        for part in raw.replace(";", ",").replace(" ", ",").split(","):
-            part = part.strip()
-            if part.isdigit():
+        # regex достаёт цифры даже из строк вида [123, 456] или "123"
+        for part in re.findall(r"\d+", str(raw)):
+            try:
                 ids.add(int(part))
+            except ValueError:
+                pass
+
+    logging.info("Loaded admin IDs: %s", sorted(ids) if ids else "NONE")
     return ids
 
 ADMIN_IDS = _load_admin_ids()
+AUTO_ADMIN_FILE = "admin_ids.json"
+
+def _save_admin_ids() -> None:
+    try:
+        with open(AUTO_ADMIN_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(ADMIN_IDS), f, ensure_ascii=False)
+    except Exception as e:
+        logging.warning("Could not save admin IDs: %s", e)
+
+def _load_auto_admin_ids() -> None:
+    try:
+        if os.path.exists(AUTO_ADMIN_FILE):
+            with open(AUTO_ADMIN_FILE, "r", encoding="utf-8") as f:
+                for item in json.load(f):
+                    ADMIN_IDS.add(int(item))
+    except Exception as e:
+        logging.warning("Could not load admin IDs file: %s", e)
+
+_load_auto_admin_ids()
 
 def is_admin(user_id: int | None) -> bool:
-    return user_id is not None and int(user_id) in ADMIN_IDS
+    if user_id is None:
+        return False
+    # ADMIN_IDS загружается при старте контейнера, поэтому после изменения переменных нужен redeploy/restart.
+    return int(user_id) in ADMIN_IDS
 
 async def admin_only(m: types.Message) -> bool:
     user_id = m.from_user.id if m.from_user else None
     if is_admin(user_id):
         return True
+
     await m.answer(
         "⛔ Эта команда доступна только администратору бота.\n"
-        f"Ваш Telegram ID: <code>{user_id}</code>\n"
-        "Добавьте его в переменную <code>ADMIN_IDS</code> и перезапустите бота."
+        f"Ваш Telegram ID: <code>{user_id}</code>\n\n"
+        "Проверьте переменную окружения <code>ADMIN_IDS</code>.\n"
+        "Пример: <code>ADMIN_IDS=123456789</code>\n"
+        "После изменения переменной обязательно перезапустите deploy/container."
     )
     return False
 
@@ -313,8 +363,18 @@ def main_kb():
 # START
 # =====================
 
-@dp.message(F.text == "/start")
+@dp.message(F.text.regexp(r"^/start(@\w+)?$"))
 async def start(m: types.Message):
+    # Если админ не задан ни в переменных, ни в файле, первый пользователь /start становится админом.
+    # Это спасает от ошибок с ADMIN_IDS/amdin_ids.
+    if not ADMIN_IDS and m.from_user:
+        ADMIN_IDS.add(int(m.from_user.id))
+        _save_admin_ids()
+        logging.info("Auto admin created: %s", m.from_user.id)
+        await m.answer(
+            "✅ Админ не был задан, поэтому вы назначены администратором.\n"
+            f"Ваш Telegram ID: <code>{m.from_user.id}</code>"
+        )
     await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=main_kb())
 
 # =====================
@@ -341,7 +401,12 @@ async def check_payment_btn(m: types.Message):
 async def about(m: types.Message):
     await m.answer(ABOUT_TEXT)
 
-@dp.message(F.text == "/help")
+def command_args(text: str) -> str:
+    """Возвращает текст после команды, поддерживает /cmd и /cmd@BotName."""
+    parts = (text or "").split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+@dp.message(F.text.regexp(r"^/help(@\w+)?$"))
 async def help_cmd(m: types.Message):
     if not await admin_only(m):
         return
@@ -360,16 +425,15 @@ async def help_cmd(m: types.Message):
         "/cash del all — удалить все кошельки"
     )
 
-@dp.message(F.text.startswith("/add "))
+@dp.message(F.text.regexp(r"^/add(@\w+)?\s+"))
 async def add_product_cmd(m: types.Message):
     if not await admin_only(m):
         return
-    parts = m.text.split(maxsplit=2)
-    if len(parts) < 3:
+    rest = command_args(m.text)
+    if not rest or len(rest.split()) < 2:
         await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>")
         return
 
-    rest = parts[1] + " " + parts[2]
     name, price_text = rest.rsplit(maxsplit=1)
     if not price_text.isdigit() or int(price_text) <= 0:
         await m.answer("❌ Цена должна быть положительным числом. Пример: <code>/add книга 500</code>")
@@ -378,11 +442,11 @@ async def add_product_cmd(m: types.Message):
     PRODUCTS[name.strip().capitalize()] = int(price_text)
     await m.answer(f"✅ Товар добавлен: <b>{escape(name.strip().capitalize())}</b> — <b>{int(price_text)} ₽</b>")
 
-@dp.message(F.text.startswith("/del "))
+@dp.message(F.text.regexp(r"^/del(@\w+)?\s+"))
 async def del_product_cmd(m: types.Message):
     if not await admin_only(m):
         return
-    name = m.text[5:].strip()
+    name = command_args(m.text)
     if not name:
         await m.answer("❌ Неверный формат. Пример: <code>/del книга</code>")
         return
@@ -409,12 +473,12 @@ async def del_product_cmd(m: types.Message):
     else:
         await m.answer("❌ Такой товар не найден.")
 
-@dp.message(F.text.startswith("/info "))
+@dp.message(F.text.regexp(r"^/info(@\w+)?\s+"))
 async def info_cmd(m: types.Message):
     if not await admin_only(m):
         return
     global ABOUT_TEXT
-    text = m.text[6:].strip()
+    text = command_args(m.text)
     if not text:
         await m.answer("❌ Напишите текст после команды. Пример: <code>/info Новый текст</code>")
         return
@@ -422,13 +486,14 @@ async def info_cmd(m: types.Message):
     await m.answer("✅ Сообщение кнопки «О боте» изменено.")
 
 
-@dp.message(F.text.startswith("/cash"))
+@dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
 async def cash_cmd(m: types.Message, state: FSMContext):
     if not await admin_only(m):
         return
 
-    parts = m.text.split(maxsplit=3)
-    if len(parts) == 1:
+    args = command_args(m.text)
+    parts = args.split(maxsplit=2)
+    if not parts:
         await m.answer(
             "💳 <b>Кошельки</b>\n\n"
             f"BTC: <code>{escape(WALLETS.get('btc') or 'не задан')}</code>\n"
@@ -443,13 +508,13 @@ async def cash_cmd(m: types.Message, state: FSMContext):
         )
         return
 
-    action = parts[1].lower()
+    action = parts[0].lower()
 
     if action == "del":
-        if len(parts) < 3:
+        if len(parts) < 2:
             await m.answer("❌ Укажите, какой кошелёк удалить: <code>/cash del btc</code>, <code>/cash del usdt</code>, <code>/cash del ton</code> или <code>/cash del all</code>")
             return
-        target = parts[2].lower()
+        target = parts[1].lower()
         if target == "all":
             for key in WALLETS:
                 WALLETS[key] = ""
@@ -466,8 +531,8 @@ async def cash_cmd(m: types.Message, state: FSMContext):
         await m.answer("❌ Неверная команда. Используйте: <code>/cash btc</code>, <code>/cash usdt</code>, <code>/cash ton</code>, <code>/cash del ...</code>")
         return
 
-    if len(parts) >= 3:
-        wallet = " ".join(parts[2:]).strip()
+    if len(parts) >= 2:
+        wallet = parts[1].strip()
         if not wallet:
             await m.answer("❌ Кошелёк не может быть пустым.")
             return
