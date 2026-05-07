@@ -78,7 +78,7 @@ def city_products(city: str) -> dict:
 
 def city_keyboard():
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:15]
+        [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:50]
     ])
     kb.inline_keyboard.append([InlineKeyboardButton(text="🔎 Другой город", callback_data="other_city")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
@@ -173,15 +173,32 @@ LOCATIONS = {
     "Симферополь": ["Центральный", "Киевский", "Железнодорожный"]
 }
 
+TOP_CITIES = set(ALL_CITIES[:50])
+FALLBACK_DISTRICTS = ["Автовокзал", "ЖД/вокзал", "Любой район"]
+GENERIC_TOP_DISTRICTS = ["Центр", "Ленинский", "Советский", "Октябрьский", "Центральный"]
+
+def get_city_districts(city: str) -> list[str]:
+    """
+    Для первых 50 крупных городов — до 5 районов.
+    Для остальных городов — всегда Центр + случайно 1-3 варианта
+    из Автовокзал / ЖД/вокзал / Любой район. Набор стабилен для города.
+    """
+    if city in TOP_CITIES:
+        return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
+
+    rnd = random.Random(f"districts:{city}")
+    count = rnd.randint(1, min(3, len(FALLBACK_DISTRICTS)))
+    return ["Центр"] + rnd.sample(FALLBACK_DISTRICTS, count)
+
 # WALLETS
 BTC_WALLET = "bc1qexample"
-USDT_WALLET = "TXexample"
+USDT_TRC20_WALLET = "TXexample"
 TON_WALLET = "UQexample"
 
 # Курсы можно менять здесь или через переменные окружения.
 # Важно: сумма в криптовалюте считается как цена_в_рублях / курс_криптовалюты_в_рублях.
 BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
-USDT_RATE = float(os.getenv("USDT_RATE", "90"))
+USDT_TRC20_RATE = float(os.getenv("USDT_TRC20_RATE", "90"))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
 
 ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
@@ -192,7 +209,7 @@ def fmt_amount(value: float, decimals: int) -> str:
 
 def get_crypto_amounts(rub: int):
     btc = fmt_amount(rub / BTC_RATE, 8)
-    usdt = fmt_amount(rub / USDT_RATE, 2)
+    usdt = fmt_amount(rub / USDT_TRC20_RATE, 2)
     ton = fmt_amount(rub / TON_RATE, 3)
     return btc, usdt, ton
 
@@ -222,7 +239,10 @@ async def start(m: types.Message):
 
 @dp.message(F.text == "🏙 Выбрать город")
 async def choose_city_btn(m: types.Message, state: FSMContext):
-    await state.clear()
+    data = await state.get_data()
+    # Не сбрасываем данные активной брони 30 минут: товар, город и районы сохраняются.
+    if time.time() - data.get("t", 0) > 1800:
+        await state.clear()
     await m.answer("🏙 Выберите город:", reply_markup=city_keyboard())
 
 @dp.message(F.text == "📦 Мой заказ")
@@ -334,15 +354,17 @@ async def order_number_from_chat(m: types.Message):
 @dp.message(S.city_name)
 async def city_name_from_chat(m: types.Message, state: FSMContext):
     city = m.text.strip()
-    matches = [x for x in ALL_CITIES if x.lower() == city.lower()]
-    if not matches:
-        await m.answer("Город не найден. Напишите название ещё раз или нажмите «🏙 Выбрать город».")
+    if not city:
+        await m.answer("Напишите название города.")
         return
 
-    city = matches[0]
+    # Если город есть в списке — берём написание из списка, иначе принимаем введённый город.
+    matches = [x for x in ALL_CITIES if x.lower() == city.lower()]
+    city = matches[0] if matches else city[:64]
+
     await state.update_data(city=city)
     await state.set_state(S.product)
-    await m.answer(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+    await m.answer(f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
 
 # 1. ГОРОД
 @dp.callback_query(F.data.startswith("c_"))
@@ -369,7 +391,7 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(product=product, price=products[product])
-    districts = LOCATIONS.get(city, ["Центр", "Район 1", "Район 2"])
+    districts = get_city_districts(city)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=d, callback_data=f"d_{d}")] for d in districts
@@ -411,7 +433,7 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
         f"Район: <b>{district}</b>\n\n"
         f"Сумма: <b>{price} ₽</b>\n\n"
         f"🔹 BTC: <code>{btc}</code> → {BTC_WALLET}\n"
-        f"🔹 USDT: <code>{usdt}</code> → {USDT_WALLET}\n"
+        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {USDT_TRC20_WALLET}\n"
         f"🔹 TON: <code>{ton}</code> → {TON_WALLET}\n\n"
         f"⏰ Внимание!!! Для покупки товара, оплатите точную сумму на любой из этих кошельков. Бот находит оплату автоматически после первого подтверждения транзакции в сети. В целях идентификации платежа - кошельки и сумма актуальны 30 минут. Если у вас нет криптовалюты, её можно купить за рубли через обменник bestchange.biz , для создания кошельков используйте trust wallet, скачать можно через google play/app store."
     )
