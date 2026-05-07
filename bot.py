@@ -1157,7 +1157,10 @@ async def cb_dist(c: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "check")
 async def cb_check(c: types.CallbackQuery, state: FSMContext):
-    await c.answer("⛔ По данному заказу оплата не была получена.", show_alert=True)
+    await c.answer(
+        "⛔ По данному заказу оплата ещё не была получена, повторите ваш запрос через 5 минут.",
+        show_alert=True,
+    )
 
 @dp.callback_query()
 async def cb_unknown(c: types.CallbackQuery):
@@ -1172,7 +1175,11 @@ async def reminder(user_id: int, order_id: int):
 
 @dp.message(F.text.regexp(r"^\d+$"))
 async def order_number(m: types.Message):
-    await m.answer("⛔ По данному заказу оплата не была получена.")
+    number = (m.text or "").strip()
+    if len(number) == 7:
+        await m.answer("⛔ По данному заказу оплата ещё не была получена, повторите ваш запрос через 5 минут.")
+    else:
+        await m.answer("❌ Ошибка в номере заказа, введите 7 цифр вашего заказа.")
 
 
 @dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
