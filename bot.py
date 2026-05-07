@@ -53,6 +53,14 @@ TON_RATE = float(os.getenv("TON_RATE", "270"))
 USE_LIVE_RATES = os.getenv("USE_LIVE_RATES", "1").strip() != "0"
 _rates_cache = {"ts": 0.0, "rates": None}
 INSTANCE_ID = str(uuid.uuid4())
+BOT_START_TIME = time.time()
+
+WALLETS = {"btc", "usdt", "ton"}
+WALLET_TITLES = {
+    "btc": "BTC",
+    "usdt": "USDT",
+    "ton": "TON",
+}
 
 ALL_CITIES = [
 "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань","Нижний Новгород","Челябинск","Омск","Самара","Ростов-на-Дону",
