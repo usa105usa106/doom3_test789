@@ -696,6 +696,7 @@ BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
 USDT_TRC20_RATE = float(os.getenv("USDT_TRC20_RATE", "90"))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
 _rates_cache = {"ts": 0, "rates": None}
+DATA_VERSION = 1
 
 ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
 
@@ -710,6 +711,10 @@ def normalize_wallets() -> None:
         else:
             WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
 
+def bump_data_version() -> None:
+    global DATA_VERSION
+    DATA_VERSION += 1
+
 def save_bot_data() -> None:
     """Сохраняет данные в основной файл и локальную копию."""
     normalize_wallets()
@@ -718,6 +723,7 @@ def save_bot_data() -> None:
         "extra_products": EXTRA_PRODUCTS,
         "wallets": WALLETS,
         "about_text": ABOUT_TEXT,
+        "data_version": DATA_VERSION,
     }
 
     targets = [DATA_SAVE_FILE]
@@ -743,7 +749,7 @@ def save_bot_data() -> None:
 
 def load_bot_data() -> bool:
     """Загружает данные из основного файла или локальной копии."""
-    global ABOUT_TEXT
+    global ABOUT_TEXT, DATA_VERSION
 
     paths = [DATA_SAVE_FILE]
     if LOCAL_SAVE_FILE not in paths:
@@ -770,6 +776,7 @@ def load_bot_data() -> bool:
         WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
 
     ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
+    DATA_VERSION = int(data.get("data_version", DATA_VERSION)) + 1
     logging.info("Bot data loaded from %s. Wallets count: btc=%s usdt=%s ton=%s",
                  load_path, len(WALLETS.get("btc", [])), len(WALLETS.get("usdt", [])), len(WALLETS.get("ton", [])))
     return True
@@ -902,7 +909,7 @@ def products_keyboard(city: str):
     cc = city_code(city)
     rows = []
     for i, (p, price) in enumerate(products.items()):
-        rows.append([InlineKeyboardButton(text=f"{p} — {price} ₽", callback_data=f"p:{cc}:{i}")])
+        rows.append([InlineKeyboardButton(text=f"{p} — {price} ₽", callback_data=f"p:{DATA_VERSION}:{cc}:{i}")])
     rows.append([
         InlineKeyboardButton(text="🔙 Города", callback_data="city"),
         InlineKeyboardButton(text="🏠 Меню", callback_data="menu"),
@@ -1000,7 +1007,7 @@ async def help_cmd(m: types.Message):
         "/add товар цена — добавить товар, пример: <code>/add книга 500</code>\n"
         "/add info — показать весь товар с ценами\n"
         "/del товар — удалить товар, пример: <code>/del книга</code>\n"
-        "/del all — удалить весь товар\n"
+        "/del all или /dell all — удалить весь товар\n"
         "/info текст — изменить сообщение кнопки «О боте»\n"
         "/cash info — показать все кошельки\n"
         "/cash btc адрес — добавить BTC кошелёк\n"
@@ -1057,11 +1064,35 @@ async def add_product_cmd(m: types.Message):
         return
 
     product_name = name.strip().capitalize()
-    PRODUCTS[product_name] = int(price_text)
-    save_bot_data()
-    await m.answer(f"✅ Товар добавлен: <b>{escape(product_name)}</b> — <b>{int(price_text)} ₽</b>")
+    price = int(price_text)
 
-@dp.message(F.text.regexp(r"^/del(@\w+)?\s+"))
+    # Если товар уже есть — обновляем цену там, где он находится.
+    product_key = next((x for x in PRODUCTS if x.lower() == product_name.lower()), None)
+    extra_key = next((x for x in EXTRA_PRODUCTS if x.lower() == product_name.lower()), None)
+
+    if product_key:
+        PRODUCTS[product_key] = price
+        target_group = "основные товары"
+    elif extra_key:
+        EXTRA_PRODUCTS[extra_key] = price
+        target_group = "дополнительные товары"
+    else:
+        # Первые 5 добавленных товаров попадают в основные, остальные — в дополнительные.
+        if len(PRODUCTS) < 5:
+            PRODUCTS[product_name] = price
+            target_group = "основные товары"
+        else:
+            EXTRA_PRODUCTS[product_name] = price
+            target_group = "дополнительные товары"
+
+    bump_data_version()
+    save_bot_data()
+    await m.answer(
+        f"✅ Товар сохранён: <b>{escape(product_name)}</b> — <b>{price} ₽</b>\n"
+        f"Раздел: <b>{target_group}</b>"
+    )
+
+@dp.message(F.text.regexp(r"^/del(@\w+)?\s+|^/dell(@\w+)?\s+"))
 async def del_product_cmd(m: types.Message):
     if not await admin_only(m):
         return
@@ -1073,6 +1104,7 @@ async def del_product_cmd(m: types.Message):
     if name.lower() == "all":
         PRODUCTS.clear()
         EXTRA_PRODUCTS.clear()
+        bump_data_version()
         save_bot_data()
         await m.answer("✅ Весь товар удалён.")
         return
@@ -1089,6 +1121,7 @@ async def del_product_cmd(m: types.Message):
         deleted = True
 
     if deleted:
+        bump_data_version()
         save_bot_data()
         await m.answer(f"✅ Товар удалён: <b>{escape(name)}</b>")
     else:
@@ -1239,8 +1272,11 @@ async def product_selected(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
     try:
-        _, cc, product_index_text = c.data.split(":", 2)
+        _, version_text, cc, product_index_text = c.data.split(":", 3)
+        callback_version = int(version_text)
         product_index = int(product_index_text)
+        if callback_version != DATA_VERSION:
+            raise ValueError("old product keyboard")
     except Exception:
         await c.answer("Кнопка устарела. Выберите город заново.", show_alert=True)
         await state.set_state(S.city)
@@ -1297,9 +1333,12 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
     try:
-        _, cc, product_index_text, district_index_text = c.data.split(":", 3)
+        _, version_text, cc, product_index_text, district_index_text = c.data.split(":", 4)
+        callback_version = int(version_text)
         product_index = int(product_index_text)
         district_index = int(district_index_text)
+        if callback_version != DATA_VERSION:
+            raise ValueError("old district keyboard")
     except Exception:
         await c.answer("Кнопка устарела. Выберите город заново.", show_alert=True)
         await state.set_state(S.city)
