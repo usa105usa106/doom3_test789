@@ -570,6 +570,33 @@ def crypto_amounts(rub: int):
         rates,
     )
 
+
+def format_uptime(seconds: float) -> str:
+    seconds = int(seconds)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    parts = []
+    if days:
+        parts.append(f"{days} д")
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    parts.append(f"{seconds} сек")
+    return " ".join(parts)
+
+def get_memory_mb() -> float:
+    try:
+        import resource
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if usage > 10_000_000:
+            return usage / 1024 / 1024
+        return usage / 1024
+    except Exception:
+        return 0.0
+
+
 def main_kb():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
         [KeyboardButton(text="🏙 Выбрать город")],
@@ -652,7 +679,34 @@ async def help_cmd(m: types.Message):
     await m.answer(
         "/add товар цена — добавить\n/add info — список\n/del all — удалить всё\n"
         "/cash btc адрес — добавить BTC\n/cash usdt адрес — добавить USDT\n/cash ton адрес — добавить TON\n"
-        "/cash info — кошельки\n/rates — курсы\n/debug — проверка"
+        "/cash info — кошельки\n/rates — курсы\n/ping — проверка бота\n/debug — проверка"
+    )
+
+
+@dp.message(Command("ping"))
+async def ping_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
+
+    start = time.perf_counter()
+    try:
+        with db() as con:
+            con.execute("SELECT 1").fetchone()
+        db_status = "OK"
+    except Exception as e:
+        db_status = f"ошибка: {escape(str(e))}"
+
+    latency_ms = (time.perf_counter() - start) * 1000
+    memory_mb = get_memory_mb() if "get_memory_mb" in globals() else 0
+    uptime = format_uptime(time.time() - BOT_START_TIME) if "format_uptime" in globals() else f"{int(time.time() - BOT_START_TIME)} сек"
+
+    await m.answer(
+        "🏓 <b>Pong</b>\n\n"
+        f"⏱ Время отклика: <b>{latency_ms:.2f} мс</b>\n"
+        f"🧠 Memory: <b>{memory_mb:.2f} MB</b>\n"
+        f"🕒 Работает: <b>{uptime}</b>\n"
+        f"🗄 SQLite: <b>{db_status}</b>\n"
+        f"🆔 Instance: <code>{INSTANCE_ID[:8]}</code>"
     )
 
 @dp.message(Command("debug"))
@@ -1014,6 +1068,11 @@ async def reminder(user_id: int, order_id: int):
 @dp.message(F.text.regexp(r"^\d+$"))
 async def order_number(m: types.Message):
     await m.answer("⛔ По данному заказу оплата не была получена.")
+
+
+@dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
+async def cash_cmd_text_fallback(m: types.Message, state: FSMContext):
+    await cash_cmd(m, state)
 
 @dp.message(F.text.startswith("/"))
 async def unknown(m: types.Message):
