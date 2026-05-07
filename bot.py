@@ -8,6 +8,7 @@ import resource
 import sqlite3
 import time
 import urllib.request
+import uuid
 import base64
 from html import escape
 from pathlib import Path
@@ -53,6 +54,7 @@ TON_RATE = float(os.getenv("TON_RATE", "270"))
 USE_LIVE_RATES = os.getenv("USE_LIVE_RATES", "1").strip() != "0"
 _rates_cache = {"ts": 0.0, "rates": None}
 BOT_START_TIME = time.time()
+INSTANCE_ID = str(uuid.uuid4())
 
 ALL_CITIES = [
 "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань","Нижний Новгород","Челябинск","Омск","Самара","Ростов-на-Дону",
@@ -172,6 +174,48 @@ def init_db():
         con.commit()
 
 init_db()
+
+def init_instance_lock_table():
+    with db() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS instance_lock(
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                owner TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        con.commit()
+
+def acquire_instance_lock() -> bool:
+    init_instance_lock_table()
+    now = time.time()
+    ttl = 90
+    with db() as con:
+        row = con.execute("SELECT owner, updated_at FROM instance_lock WHERE id=1").fetchone()
+        if row and row["owner"] != INSTANCE_ID and now - float(row["updated_at"]) < ttl:
+            logging.error("Another bot instance is active: %s", row["owner"])
+            return False
+        con.execute(
+            "INSERT OR REPLACE INTO instance_lock(id, owner, updated_at) VALUES(1, ?, ?)",
+            (INSTANCE_ID, now),
+        )
+        con.commit()
+    return True
+
+async def instance_heartbeat():
+    while True:
+        try:
+            with db() as con:
+                con.execute(
+                    "UPDATE instance_lock SET updated_at=? WHERE id=1 AND owner=?",
+                    (time.time(), INSTANCE_ID),
+                )
+                con.commit()
+        except Exception as e:
+            logging.warning("instance heartbeat failed: %s", e)
+        await asyncio.sleep(30)
+
+
 
 def processed_once(key: str) -> bool:
     """True = можно обрабатывать. False = дубль."""
@@ -676,7 +720,8 @@ async def ping_cmd(m: types.Message):
         f"⏱ Время отклика: <b>{latency_ms:.2f} мс</b>\n"
         f"🧠 Memory: <b>{memory_mb:.2f} MB</b>\n"
         f"🕒 Работает: <b>{uptime}</b>\n"
-        f"🗄 SQLite: <b>{db_status}</b>"
+        f"🗄 SQLite: <b>{db_status}</b>\n"
+        f"🆔 Instance: <code>{INSTANCE_ID[:8]}</code>"
     )
 
 @dp.message(Command("rates"))
@@ -1026,6 +1071,12 @@ async def unknown(m: types.Message):
     await m.answer("❌ Неизвестная команда. Используйте /help" if is_admin(m.from_user.id if m.from_user else None) else "⛔ Эта команда доступна только администратору бота.")
 
 async def main():
+    if not acquire_instance_lock():
+        logging.error("Bot stopped: another active instance holds the lock.")
+        return
+
+    asyncio.create_task(instance_heartbeat())
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
