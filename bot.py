@@ -34,6 +34,7 @@ DATA_SAVE_FILE = os.getenv(
     "DATA_SAVE_FILE",
     "/data/bot_saved_data.json" if os.path.exists("/data") else "bot_saved_data.json"
 )
+LOCAL_SAVE_FILE = "bot_saved_data.json"
 
 # =====================
 # ADMIN CONFIG
@@ -710,6 +711,7 @@ def normalize_wallets() -> None:
             WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
 
 def save_bot_data() -> None:
+    """Сохраняет данные в основной файл и локальную копию."""
     normalize_wallets()
     data = {
         "products": PRODUCTS,
@@ -717,18 +719,41 @@ def save_bot_data() -> None:
         "wallets": WALLETS,
         "about_text": ABOUT_TEXT,
     }
-    parent = os.path.dirname(DATA_SAVE_FILE)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(DATA_SAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    targets = [DATA_SAVE_FILE]
+    if LOCAL_SAVE_FILE not in targets:
+        targets.append(LOCAL_SAVE_FILE)
+
+    last_error = None
+    saved_any = False
+    for path in targets:
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            saved_any = True
+        except Exception as e:
+            last_error = e
+            logging.warning("Could not save bot data to %s: %s", path, e)
+
+    if not saved_any and last_error:
+        raise last_error
 
 def load_bot_data() -> bool:
+    """Загружает данные из основного файла или локальной копии."""
     global ABOUT_TEXT
-    if not os.path.exists(DATA_SAVE_FILE):
+
+    paths = [DATA_SAVE_FILE]
+    if LOCAL_SAVE_FILE not in paths:
+        paths.append(LOCAL_SAVE_FILE)
+
+    load_path = next((p for p in paths if os.path.exists(p)), None)
+    if not load_path:
         return False
 
-    with open(DATA_SAVE_FILE, "r", encoding="utf-8") as f:
+    with open(load_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     PRODUCTS.clear()
@@ -745,6 +770,8 @@ def load_bot_data() -> bool:
         WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
 
     ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
+    logging.info("Bot data loaded from %s. Wallets count: btc=%s usdt=%s ton=%s",
+                 load_path, len(WALLETS.get("btc", [])), len(WALLETS.get("usdt", [])), len(WALLETS.get("ton", [])))
     return True
 
 def city_products(city: str) -> dict:
@@ -760,11 +787,11 @@ def city_products(city: str) -> dict:
 def get_city_districts(city: str) -> list[str]:
     if city in TOP_CITIES:
         return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
-    # Для городов после 50 по популярности: случайные 2-4 района.
-    # Набор стабилен для одного города, чтобы кнопки не менялись во время заказа.
-    rnd = random.Random(f"districts:{city}")
-    count = rnd.randint(2, 4)
-    return rnd.sample(FALLBACK_DISTRICTS, count)
+
+    # Для городов после 50 по популярности: каждый новый выбор товара даёт 2-4 случайных района.
+    # Список потом сохраняется в state, поэтому кнопки конкретного заказа не ломаются.
+    count = random.randint(2, 4)
+    return random.sample(FALLBACK_DISTRICTS, count)
 
 def city_code(city: str) -> str:
     return CITY_CODES.get(city, "x")
@@ -1132,7 +1159,7 @@ async def cash_cmd(m: types.Message, state: FSMContext):
         WALLETS[action].append(wallet)
         save_bot_data()
         await state.clear()
-        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} добавлен: <code>{escape(wallet)}</code>")
+        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} добавлен: <code>{escape(wallet)}</code>\nВсего сохранено: <b>{len(WALLETS[action])}</b>")
         return
 
     await state.update_data(cash_type=action)
@@ -1157,7 +1184,7 @@ async def cash_wallet_from_chat(m: types.Message, state: FSMContext):
     WALLETS[cash_type].append(wallet)
     save_bot_data()
     await state.clear()
-    await m.answer(f"✅ Кошелёк {WALLET_TITLES[cash_type]} добавлен: <code>{escape(wallet)}</code>")
+    await m.answer(f"✅ Кошелёк {WALLET_TITLES[cash_type]} добавлен: <code>{escape(wallet)}</code>\nВсего сохранено: <b>{len(WALLETS[cash_type])}</b>")
 
 # =====================
 # INLINE HANDLERS
@@ -1288,7 +1315,7 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
 
     products = city_products(city)
     product_items = list(products.items())
-    districts = get_city_districts(city)
+    districts = data.get("districts") or get_city_districts(city)
 
     if product_index < 0 or product_index >= len(product_items):
         await c.answer("Товар устарел. Выберите товар заново.", show_alert=True)
