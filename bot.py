@@ -4,9 +4,11 @@ import logging
 import os
 import random
 import re
+import resource
 import sqlite3
 import time
 import urllib.request
+import base64
 from html import escape
 from pathlib import Path
 
@@ -50,6 +52,7 @@ USDT_RATE = float(os.getenv("USDT_RATE", os.getenv("USDT_TRC20_RATE", "90")))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
 USE_LIVE_RATES = os.getenv("USE_LIVE_RATES", "1").strip() != "0"
 _rates_cache = {"ts": 0.0, "rates": None}
+BOT_START_TIME = time.time()
 
 ALL_CITIES = [
 "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань","Нижний Новгород","Челябинск","Омск","Самара","Ростов-на-Дону",
@@ -259,7 +262,16 @@ def set_about_text(text: str):
 def all_products():
     with db() as con:
         rows = con.execute("SELECT name, price, group_name, sort_order FROM products ORDER BY sort_order, rowid").fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        # Совместимость со старыми значениями группы из прошлых версий.
+        if d.get("group_name") in ("основные", "основные товары"):
+            d["group_name"] = "main"
+        if d.get("group_name") in ("дополнительные", "дополнительные товары"):
+            d["group_name"] = "extra"
+        result.append(d)
+    return result
 
 def group_counts():
     rows = all_products()
@@ -271,6 +283,30 @@ def group_counts():
 def product_pid(name: str, group: str) -> str:
     import hashlib
     return hashlib.blake2s(f"{group}:{name}".encode("utf-8"), digest_size=4).hexdigest()
+
+def b64s(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+
+def unb64s(text: str) -> str:
+    pad = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode((text + pad).encode("ascii")).decode("utf-8")
+
+def compact_product_callback(prefix: str, cc: str, item: dict, district_idx: int | None = None) -> str:
+    """
+    Самодостаточная callback_data: содержит город, pid, цену и имя товара.
+    Это нужно, чтобы кнопка работала даже если другой worker Railway ещё не видит SQLite.
+    """
+    name64 = b64s(item["name"])
+    if district_idx is None:
+        cb = f"{prefix}:{cc}:{item['pid']}:{item['price']}:{name64}"
+    else:
+        cb = f"{prefix}:{cc}:{item['pid']}:{district_idx}:{item['price']}:{name64}"
+    # Telegram limit 64 bytes. Если название длинное, fallback на старый короткий формат.
+    if len(cb.encode("utf-8")) <= 64:
+        return cb
+    if district_idx is None:
+        return f"prod:{cc}:{item['pid']}"
+    return f"dist:{cc}:{item['pid']}:{district_idx}"
 
 def current_catalog(city: str):
     rows = all_products()
@@ -444,6 +480,22 @@ def get_districts(city: str, pid: str) -> list[str]:
     rnd = random.Random(f"{city}:{pid}")
     return rnd.sample(FALLBACK_DISTRICTS, rnd.randint(2, 4))
 
+def item_from_callback_parts(parts: list[str]):
+    """
+    prodx:<cc>:<pid>:<price>:<name64>
+    distx:<cc>:<pid>:<district_idx>:<price>:<name64>
+    """
+    try:
+        if parts[0] == "prodx" and len(parts) == 5:
+            _, cc, pid, price_text, name64 = parts
+            return cc, {"pid": pid, "name": unb64s(name64), "price": int(price_text), "group": "callback"}, None
+        if parts[0] == "distx" and len(parts) == 6:
+            _, cc, pid, idx_text, price_text, name64 = parts
+            return cc, {"pid": pid, "name": unb64s(name64), "price": int(price_text), "group": "callback"}, int(idx_text)
+    except Exception:
+        return None, None, None
+    return None, None, None
+
 def get_rates() -> dict:
     if not USE_LIVE_RATES:
         return {"btc": BTC_RATE, "usdt": USDT_RATE, "ton": TON_RATE}
@@ -476,6 +528,33 @@ def crypto_amounts(rub: int):
         rates,
     )
 
+
+def format_uptime(seconds: float) -> str:
+    seconds = int(seconds)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    parts = []
+    if days:
+        parts.append(f"{days} д")
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    parts.append(f"{seconds} сек")
+    return " ".join(parts)
+
+def get_memory_mb() -> float:
+    """
+    ru_maxrss на Linux возвращает KB, на macOS bytes.
+    Railway/Linux => KB.
+    """
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if usage > 10_000_000:  # похоже на bytes
+        return usage / 1024 / 1024
+    return usage / 1024
+
+
 def main_kb():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
         [KeyboardButton(text="🏙 Выбрать город")],
@@ -493,14 +572,26 @@ def city_keyboard():
 
 def products_keyboard(city: str):
     cc = CITY_CODES.get(city, "0")
-    rows = [[InlineKeyboardButton(text=f"{x['name']} — {x['price']} ₽", callback_data=f"prod:{cc}:{x['pid']}")] for x in current_catalog(city)]
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{x['name']} — {x['price']} ₽",
+            callback_data=compact_product_callback("prodx", cc, x),
+        )]
+        for x in current_catalog(city)
+    ]
     rows.append([InlineKeyboardButton(text="🔙 Города", callback_data="city_menu"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def districts_keyboard(city: str, pid: str):
+def districts_keyboard(city: str, item: dict):
     cc = CITY_CODES.get(city, "0")
-    districts = get_districts(city, pid)
-    rows = [[InlineKeyboardButton(text=d, callback_data=f"dist:{cc}:{pid}:{i}")] for i, d in enumerate(districts)]
+    districts = get_districts(city, item["pid"])
+    rows = [
+        [InlineKeyboardButton(
+            text=d,
+            callback_data=compact_product_callback("distx", cc, item, i),
+        )]
+        for i, d in enumerate(districts)
+    ]
     rows.append([InlineKeyboardButton(text="🔙 Товары", callback_data=f"back:{cc}"), InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -546,7 +637,7 @@ async def help_cmd(m: types.Message):
     await m.answer(
         "/add товар цена — добавить\n/add info — список\n/del all — удалить всё\n"
         "/cash btc адрес — добавить BTC\n/cash usdt адрес — добавить USDT\n/cash ton адрес — добавить TON\n"
-        "/cash info — кошельки\n/rates — курсы\n/debug — проверка"
+        "/cash info — кошельки\n/rates — курсы\n/ping — отклик, память, время работы\n/debug — проверка"
     )
 
 @dp.message(Command("debug"))
@@ -558,6 +649,34 @@ async def debug_cmd(m: types.Message):
         f"Основные: <b>{mcnt}</b>\nДополнительные: <b>{ecnt}</b>\n"
         f"BTC/USDT/TON кошельки: <b>{len(get_wallets('btc'))}/{len(get_wallets('usdt'))}/{len(get_wallets('ton'))}</b>\n"
         f"Городов в списке: <b>{len(ALL_CITIES)}</b>"
+    )
+
+
+@dp.message(Command("ping"))
+async def ping_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
+
+    start = time.perf_counter()
+
+    # Быстрая проверка SQLite, чтобы отклик был реальным, а не просто ответ Python.
+    try:
+        with db() as con:
+            con.execute("SELECT 1").fetchone()
+        db_status = "OK"
+    except Exception as e:
+        db_status = f"ошибка: {escape(str(e))}"
+
+    latency_ms = (time.perf_counter() - start) * 1000
+    memory_mb = get_memory_mb()
+    uptime = format_uptime(time.time() - BOT_START_TIME)
+
+    await m.answer(
+        "🏓 <b>Pong</b>\n\n"
+        f"⏱ Время отклика: <b>{latency_ms:.2f} мс</b>\n"
+        f"🧠 Memory: <b>{memory_mb:.2f} MB</b>\n"
+        f"🕒 Работает: <b>{uptime}</b>\n"
+        f"🗄 SQLite: <b>{db_status}</b>"
     )
 
 @dp.message(Command("rates"))
@@ -643,7 +762,10 @@ async def cash_cmd(m: types.Message, state: FSMContext):
     if len(parts) > 1 and parts[1].strip():
         add_wallet(action, parts[1].strip())
         await state.clear()
-        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} добавлен. Всего: <b>{len(get_wallets(action))}</b>")
+        await m.answer(
+            f"✅ Кошелёк {WALLET_TITLES[action]} добавлен. Всего: <b>{len(get_wallets(action))}</b>\n"
+            f"{wallets_text(action)}"
+        )
         return
     await state.update_data(cash_type=action)
     await state.set_state(S.cash_wallet)
@@ -680,7 +802,7 @@ async def support_btn(m: types.Message, state: FSMContext):
 async def support_input(m: types.Message, state: FSMContext):
     if (m.text or "").startswith("/"):
         await state.clear()
-        await m.answer("❌ Обращение отменено.")
+        await m.answer("❌ Обращение отменено. Повторите команду ещё раз.")
         return
     await state.clear()
     await m.answer("✅ Ваш запрос будет рассмотрен в течение 1-3 дней, ожидайте, вам придёт ответ, не повторяйте ваш запрос несколько раз.")
@@ -740,6 +862,27 @@ async def cb_city_old(c: types.CallbackQuery, state: FSMContext):
         return
     await show_products(c.message, state, city)
 
+
+@dp.callback_query(F.data.startswith("prodx:"))
+async def cb_product_selfcontained(c: types.CallbackQuery, state: FSMContext):
+    parts = c.data.split(":")
+    cc, item, _ = item_from_callback_parts(parts)
+    city = CODE_CITIES.get(cc or "")
+    if not city or not item:
+        await c.answer("Кнопка устарела.", show_alert=True)
+        return
+
+    # Если база видит товар — берём актуальную цену из базы. Если нет — используем данные из callback.
+    fresh = resolve_item(city, item["pid"])
+    if fresh:
+        item = fresh
+
+    await state.update_data(city=city)
+    await c.message.answer(
+        f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
+        reply_markup=districts_keyboard(city, item),
+    )
+
 @dp.callback_query(F.data.startswith("prod:"))
 async def cb_product(c: types.CallbackQuery, state: FSMContext):
     try:
@@ -756,7 +899,7 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(city=city)
     await c.message.answer(
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(city, pid),
+        reply_markup=districts_keyboard(city, item),
     )
 
 @dp.callback_query(F.data.startswith("p:"))
@@ -775,7 +918,7 @@ async def cb_product_old(c: types.CallbackQuery, state: FSMContext):
     await state.update_data(city=city)
     await c.message.answer(
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
-        reply_markup=districts_keyboard(city, item["pid"]),
+        reply_markup=districts_keyboard(city, item),
     )
 
 @dp.callback_query(F.data.startswith("back:"))
@@ -786,6 +929,43 @@ async def cb_back_products(c: types.CallbackQuery, state: FSMContext):
         await show_products(c.message, state, city)
     else:
         await show_city_menu(c.message, state)
+
+
+@dp.callback_query(F.data.startswith("distx:"))
+async def cb_dist_selfcontained(c: types.CallbackQuery, state: FSMContext):
+    parts = c.data.split(":")
+    cc, item, idx = item_from_callback_parts(parts)
+    city = CODE_CITIES.get(cc or "")
+    if not city or not item or idx is None:
+        await c.answer("Кнопка устарела.", show_alert=True)
+        return
+
+    fresh = resolve_item(city, item["pid"])
+    if fresh:
+        item = fresh
+
+    districts = get_districts(city, item["pid"])
+    if idx < 0 or idx >= len(districts):
+        await c.answer("Район устарел.", show_alert=True)
+        return
+
+    district = districts[idx]
+    order_id = random.randint(1000000, 9999999)
+    btc, usdt, ton, rates = crypto_amounts(int(item["price"]))
+    await state.update_data(order_id=order_id, t=time.time(), city=city, product=item["name"], price=item["price"], district=district)
+    await c.message.answer(
+        f"🆔 <b>Заказ №{order_id}</b>\n\n"
+        f"Товар: <b>{escape(item['name'])}</b>\n"
+        f"Город: <b>{escape(city)}</b>\n"
+        f"Район: <b>{escape(district)}</b>\n\n"
+        f"Сумма: <b>{item['price']} ₽</b>\n\n"
+        f"🔹 BTC: <code>{btc}</code> → {escape(random_wallet('btc'))}\n"
+        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(random_wallet('usdt'))}\n"
+        f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n\n"
+        "⏰ Кошельки и сумма актуальны 30 минут.",
+        reply_markup=payment_keyboard(),
+    )
+    asyncio.create_task(reminder(c.from_user.id, order_id))
 
 @dp.callback_query(F.data.startswith("dist:"))
 async def cb_dist(c: types.CallbackQuery, state: FSMContext):
