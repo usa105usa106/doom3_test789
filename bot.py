@@ -82,6 +82,7 @@ def _load_admin_ids() -> set[int]:
 
 ADMIN_IDS = _load_admin_ids()
 AUTO_ADMIN_FILE = "admin_ids.json"
+DATA_SAVE_FILE = "bot_saved_data.json"
 
 def _save_admin_ids() -> None:
     try:
@@ -292,15 +293,55 @@ def get_city_districts(city: str) -> list[str]:
 
 # WALLETS
 WALLETS = {
-    "btc": "bc1qexample",
-    "usdt": "TXexample",
-    "ton": "UQexample",
+    "btc": ["bc1qexample"],
+    "usdt": ["TXexample"],
+    "ton": ["UQexample"],
 }
 WALLET_TITLES = {
     "btc": "BTC",
     "usdt": "USDT-(TRC20)",
     "ton": "TON",
 }
+
+
+def get_random_wallet(wallet_type: str) -> str:
+    wallets = WALLETS.get(wallet_type, [])
+    if not wallets:
+        return "не задан"
+    return random.choice(wallets)
+
+def wallets_text(wallet_type: str) -> str:
+    wallets = WALLETS.get(wallet_type, [])
+    if not wallets:
+        return "не задан"
+    return "\n".join(f"• <code>{escape(w)}</code>" for w in wallets)
+
+def wallets_info_text() -> str:
+    """Текущий список введённых кошельков."""
+    lines = ["💳 <b>Введённые кошельки</b>", ""]
+    for key in ("btc", "usdt", "ton"):
+        wallet = WALLETS.get(key) or "не задан"
+        lines.append(f"{WALLET_TITLES[key]}: <code>{escape(wallet)}</code>")
+    return "\n".join(lines)
+
+def products_info_text() -> str:
+    """Весь введённый товар с ценами."""
+    if not PRODUCTS and not EXTRA_PRODUCTS:
+        return "📦 <b>Товары</b>\n\nСписок товаров пуст."
+
+    lines = ["📦 <b>Введённый товар с ценами</b>", ""]
+    used: set[str] = set()
+
+    for name, price in sorted(PRODUCTS.items(), key=lambda x: x[0].lower()):
+        used.add(name.lower())
+        lines.append(f"• <b>{escape(name)}</b> — <code>{int(price)} ₽</code>")
+
+    for name, price in sorted(EXTRA_PRODUCTS.items(), key=lambda x: x[0].lower()):
+        if name.lower() in used:
+            continue
+        lines.append(f"• <b>{escape(name)}</b> — <code>{int(price)} ₽</code>")
+
+    return "\n".join(lines)
 
 # Резервные курсы на случай, если сервер не сможет получить актуальный курс из интернета.
 # Сумма в криптовалюте считается строго так: цена_в_рублях / курс_криптовалюты_в_рублях.
@@ -310,6 +351,49 @@ TON_RATE = float(os.getenv("TON_RATE", "270"))
 _rates_cache = {"ts": 0, "rates": None}
 
 ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
+
+def save_bot_data() -> None:
+    """Сохраняет все настройки, изменённые командами админа."""
+    data = {
+        "products": PRODUCTS,
+        "extra_products": EXTRA_PRODUCTS,
+        "wallets": WALLETS,
+        "about_text": ABOUT_TEXT,
+    }
+    with open(DATA_SAVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_bot_data() -> bool:
+    """Загружает последние сохранённые настройки. Возвращает True, если файл найден."""
+    global ABOUT_TEXT
+
+    if not os.path.exists(DATA_SAVE_FILE):
+        return False
+
+    with open(DATA_SAVE_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    PRODUCTS.clear()
+    PRODUCTS.update({str(k): int(v) for k, v in data.get("products", {}).items()})
+
+    EXTRA_PRODUCTS.clear()
+    EXTRA_PRODUCTS.update({str(k): int(v) for k, v in data.get("extra_products", {}).items()})
+
+    saved_wallets = data.get("wallets", {})
+    for key in WALLETS:
+        value = saved_wallets.get(key, [])
+        if isinstance(value, str):
+            value = [value] if value else []
+        WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
+
+    ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
+    return True
+
+
+try:
+    load_bot_data()
+except Exception as e:
+    logging.warning("Could not auto-load saved bot data: %s", e)
 
 def fmt_amount(value: float, decimals: int) -> str:
     """Формат без лишних нулей и без пробелов вокруг точки."""
@@ -415,23 +499,56 @@ async def help_cmd(m: types.Message):
         "/start — открыть главное меню\n"
         "/help — список команд администратора\n"
         "/add товар цена — добавить товар, пример: <code>/add книга 500</code>\n"
+        "/add info — показать весь введённый товар с ценами\n"
         "/del товар — удалить товар, пример: <code>/del книга</code>\n"
         "/del all — удалить весь товар\n"
         "/info текст — изменить сообщение кнопки «О боте»\n"
+        "/cash info — список введённых кошельков\n"
         "/cash btc — задать BTC кошелёк\n"
         "/cash usdt — задать USDT-(TRC20) кошелёк\n"
         "/cash ton — задать TON кошелёк\n"
         "/cash del btc|usdt|ton — удалить выбранный кошелёк\n"
-        "/cash del all — удалить все кошельки"
+        "/cash del all — удалить все кошельки\n"
+        "/save — сохранить все текущие изменения\n"
+        "/load — загрузить последние сохранённые значения"
     )
 
-@dp.message(F.text.regexp(r"^/add(@\w+)?\s+"))
+@dp.message(F.text.regexp(r"^/save(@\w+)?$"))
+async def save_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
+    try:
+        save_bot_data()
+        await m.answer("✅ Все изменения сохранены.")
+    except Exception as e:
+        logging.exception("Save failed")
+        await m.answer(f"❌ Не удалось сохранить данные: <code>{escape(str(e))}</code>")
+
+@dp.message(F.text.regexp(r"^/load(@\w+)?$"))
+async def load_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
+    try:
+        if not load_bot_data():
+            await m.answer("❌ Сохранение не найдено. Сначала используйте /save.")
+            return
+        await m.answer("✅ Последние сохранённые значения загружены.")
+    except Exception as e:
+        logging.exception("Load failed")
+        await m.answer(f"❌ Не удалось загрузить данные: <code>{escape(str(e))}</code>")
+
+@dp.message(F.text.regexp(r"^/add(@\w+)?(\s|$)"))
 async def add_product_cmd(m: types.Message):
     if not await admin_only(m):
         return
     rest = command_args(m.text)
+
+    if rest.lower() == "info":
+        await m.answer(products_info_text())
+        return
+
     if not rest or len(rest.split()) < 2:
-        await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>")
+        await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>\nПосмотреть товары: <code>/add info</code>")
         return
 
     name, price_text = rest.rsplit(maxsplit=1)
@@ -495,11 +612,9 @@ async def cash_cmd(m: types.Message, state: FSMContext):
     parts = args.split(maxsplit=2)
     if not parts:
         await m.answer(
-            "💳 <b>Кошельки</b>\n\n"
-            f"BTC: <code>{escape(WALLETS.get('btc') or 'не задан')}</code>\n"
-            f"USDT-(TRC20): <code>{escape(WALLETS.get('usdt') or 'не задан')}</code>\n"
-            f"TON: <code>{escape(WALLETS.get('ton') or 'не задан')}</code>\n\n"
-            "Команды:\n"
+            wallets_info_text() +
+            "\n\nКоманды:\n"
+            "<code>/cash info</code> — список введённых кошельков\n"
             "<code>/cash btc</code> — задать BTC кошелёк\n"
             "<code>/cash usdt</code> — задать USDT-(TRC20) кошелёк\n"
             "<code>/cash ton</code> — задать TON кошелёк\n"
@@ -510,6 +625,10 @@ async def cash_cmd(m: types.Message, state: FSMContext):
 
     action = parts[0].lower()
 
+    if action == "info":
+        await m.answer(wallets_info_text())
+        return
+
     if action == "del":
         if len(parts) < 2:
             await m.answer("❌ Укажите, какой кошелёк удалить: <code>/cash del btc</code>, <code>/cash del usdt</code>, <code>/cash del ton</code> или <code>/cash del all</code>")
@@ -517,13 +636,13 @@ async def cash_cmd(m: types.Message, state: FSMContext):
         target = parts[1].lower()
         if target == "all":
             for key in WALLETS:
-                WALLETS[key] = ""
+                WALLETS[key] = []
             await m.answer("✅ Все кошельки удалены.")
             return
         if target not in WALLETS:
             await m.answer("❌ Можно удалить только: btc, usdt, ton или all.")
             return
-        WALLETS[target] = ""
+        WALLETS[target] = []
         await m.answer(f"✅ Кошелёк {WALLET_TITLES[target]} удалён.")
         return
 
@@ -536,7 +655,7 @@ async def cash_cmd(m: types.Message, state: FSMContext):
         if not wallet:
             await m.answer("❌ Кошелёк не может быть пустым.")
             return
-        WALLETS[action] = wallet
+        WALLETS[action].append(wallet)
         await state.clear()
         await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} сохранён: <code>{escape(wallet)}</code>")
         return
@@ -559,7 +678,7 @@ async def cash_wallet_from_chat(m: types.Message, state: FSMContext):
     if not wallet:
         await m.answer("❌ Кошелёк не может быть пустым.")
         return
-    WALLETS[cash_type] = wallet
+    WALLETS[cash_type].append(wallet)
     await state.clear()
     await m.answer(f"✅ Кошелёк {WALLET_TITLES[cash_type]} сохранён: <code>{escape(wallet)}</code>")
 
@@ -665,6 +784,10 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
     product = data['product']
     city = data['city']
     btc, usdt, ton = get_crypto_amounts(price)
+    # Берём актуальные кошельки из WALLETS в момент создания оплаты.
+    # Это гарантирует, что в оплате показывается последний введённый админом адрес,
+    # а не случайное/старое значение из состояния пользователя.
+    payment_wallets = {key: WALLETS.get(key) or "не задан" for key in ("btc", "usdt", "ton")}
 
     text = (
         f"🆔 <b>Заказ №{order_id}</b>\n\n"
@@ -672,9 +795,9 @@ async def district_selected(c: types.CallbackQuery, state: FSMContext):
         f"Город: <b>{city}</b>\n"
         f"Район: <b>{district}</b>\n\n"
         f"Сумма: <b>{price} ₽</b>\n\n"
-        f"🔹 BTC: <code>{btc}</code> → {escape(WALLETS.get("btc") or "не задан")}\n"
-        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(WALLETS.get("usdt") or "не задан")}\n"
-        f"🔹 TON: <code>{ton}</code> → {escape(WALLETS.get("ton") or "не задан")}\n\n"
+        f"🔹 BTC: <code>{btc}</code> → {escape(payment_wallets['btc'])}\n"
+        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(payment_wallets['usdt'])}\n"
+        f"🔹 TON: <code>{ton}</code> → {escape(payment_wallets['ton'])}\n\n"
         f"⏰ Внимание!!! Для покупки товара, оплатите точную сумму на любой из этих кошельков. Бот находит оплату автоматически после первого подтверждения транзакции в сети. В целях идентификации платежа - кошельки и сумма актуальны 30 минут. Если у вас нет криптовалюты, её можно купить за рубли через обменник bestchange.biz , для создания кошельков используйте trust wallet, скачать можно через google play/app store."
     )
 
