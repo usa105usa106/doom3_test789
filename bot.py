@@ -24,7 +24,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not set")
 
-DB_PATH = os.getenv("DB_PATH", "/data/bot.db" if os.path.exists("/data") else "bot.db")
+def resolve_db_path() -> str:
+    """
+    Один путь к базе для товаров и кошельков.
+    На Railway используйте Volume /data. Тогда все команды и кнопки читают одну базу.
+    """
+    env_path = os.getenv("DB_PATH", "").strip()
+    if env_path:
+        return env_path
+    try:
+        os.makedirs("/data", exist_ok=True)
+        return "/data/bot.db"
+    except Exception:
+        return "bot.db"
+
+DB_PATH = resolve_db_path()
 ADMIN_FILE = "admin_ids.json"
 HARD_ADMIN_IDS = [5172121123]
 
@@ -57,7 +71,29 @@ ALL_CITIES = [
 "Кунгур","Лысьва","Краснокамск","Губаха","Добрянка","Кудымкар","Серов","Асбест","Полевской","Ревда","Верхняя Пышма","Новоуральск",
 "Краснотурьинск","Лесной","Качканар","Алапаевск","Ирбит","Копейск","Троицк","Озёрск","Снежинск","Сатка","Аша","Коркино",
 "Южноуральск","Еманжелинск","Кыштым","Курган","Шадринск","Далматово","Петухово","Макушино","Бугуруслан","Бузулук","Гай","Новотроицк",
-"Соль-Илецк","Медногорск","Сорочинск","Кувандык","Сызрань","Новокуйбышевск","Чапаевск","Отрадный","Жигулёвск","Кинель","Похвистнево"
+"Соль-Илецк","Медногорск","Сорочинск","Кувандык","Сызрань","Новокуйбышевск","Чапаевск","Отрадный","Жигулёвск","Кинель","Похвистнево",
+"Бор","Арзамас","Саров","Кстово","Павлово","Выкса","Балахна","Заволжье","Городец","Шуя","Кинешма","Вичуга","Фурманов","Тейково",
+"Родники","Кольчугино","Александров","Гусь-Хрустальный","Вязники","Рыбинск","Переславль-Залесский","Углич","Тутаев","Ростов Великий",
+"Ржев","Вышний Волочёк","Кимры","Торжок","Конаково","Бежецк","Великие Луки","Остров","Печоры","Невель","Старая Русса","Боровичи",
+"Валдай","Кириши","Выборг","Гатчина","Сосновый Бор","Тихвин","Всеволожск","Кингисепп","Луга","Сертолово","Волхов","Тосно",
+"Пушкин","Колпино","Петергоф","Кронштадт","Ломоносов","Котлас","Новодвинск","Коряжма","Мирный","Онега","Вельск","Нарьян-Мар",
+"Апатиты","Североморск","Мончегорск","Кандалакша","Оленегорск","Костомукша","Сортавала","Кондопога","Сегежа","Медвежьегорск",
+"Великий Устюг","Сокол","Шексна","Грязовец","Буй","Шарья","Нерехта","Галич","Мантурово","Клин","Дмитров","Солнечногорск",
+"Ногинск","Пушкино","Орехово-Зуево","Сергиев Посад","Воскресенск","Лобня","Долгопрудный","Реутов","Дубна","Егорьевск",
+"Наро-Фоминск","Чехов","Ступино","Кашира","Видное","Истра","Фрязино","Лыткарино","Дзержинский","Котельники","Луховицы",
+"Можайск","Руза","Зарайск","Волоколамск","Клинцы","Новозыбков","Дятьково","Унеча","Севск","Алексин","Ефремов","Узловая",
+"Щёкино","Донской","Кимовск","Киреевск","Суворов","Мценск","Ливны","Железногорск","Курчатов","Льгов","Рыльск","Губкин",
+"Шебекино","Алексеевка","Валуйки","Строитель","Россошь","Борисоглебск","Лиски","Острогожск","Нововоронеж","Павловск",
+"Семилуки","Моршанск","Рассказово","Котовск","Уварово","Кирсанов","Кузнецк","Заречный","Каменка","Сердобск","Нижний Ломов",
+"Сасово","Скопин","Касимов","Шацк","Вязьма","Рославль","Сафоново","Ярцево","Гагарин","Десногорск","Людиново","Киров Калужский",
+"Малоярославец","Балабаново","Козельск","Кондрово","Ейск","Кропоткин","Анапа","Геленджик","Туапсе","Тихорецк",
+"Славянск-на-Кубани","Белореченск","Лабинск","Апшеронск","Горячий Ключ","Крымск","Темрюк","Кореновск","Усть-Лабинск",
+"Майкоп","Адыгейск","Черкесск","Карачаевск","Будённовск","Георгиевск","Минеральные Воды","Михайловск","Изобильный",
+"Светлоград","Зеленокумск","Лермонтов","Баксан","Прохладный","Моздок","Беслан","Малгобек","Аргун","Гудермес","Шали",
+"Урус-Мартан","Кизляр","Буйнакск","Избербаш","Кизилюрт","Дагестанские Огни","Южно-Сухокумск","Волгодонск","Гуково",
+"Донецк","Зверево","Миллерово","Морозовск","Сальск","Семикаракорск","Цимлянск","Фролово","Камышин","Михайловка",
+"Урюпинск","Котельниково","Калач-на-Дону","Палласовка","Дубовка","Ахтубинск","Знаменск","Харабали","Камызяк","Нариманов",
+"Вольск","Балашов","Маркс","Пугачёв","Ртищево","Аткарск","Петровск","Хвалынск","Ершов","Новоузенск","Красноармейск"
 ]
 ALL_CITIES = list(dict.fromkeys(ALL_CITIES))
 CITY_CODES = {city: str(i) for i, city in enumerate(ALL_CITIES)}
@@ -157,13 +193,12 @@ async def dedupe_messages(handler, event: types.Message, data: dict):
 
 @dp.callback_query.outer_middleware()
 async def dedupe_callbacks(handler, event: types.CallbackQuery, data: dict):
-    # отвечаем сразу, чтобы кнопка не пульсировала
-    try:
-        await event.answer()
-    except Exception:
-        pass
     key = f"c:{event.id}"
     if not processed_once(key):
+        try:
+            await event.answer()
+        except Exception:
+            pass
         return
     return await handler(event, data)
 
@@ -339,6 +374,70 @@ def random_wallet(t: str) -> str:
     items = get_wallets(t)
     return random.choice(items) if items else "не задан"
 
+
+def migrate_json_to_sqlite_once():
+    """
+    Переносит старые JSON-сохранения в SQLite один раз.
+    Это нужно, чтобы товары/кошельки, добавленные в прошлых версиях, не потерялись.
+    """
+    with db() as con:
+        flag = con.execute("SELECT value FROM settings WHERE key='json_migrated'").fetchone()
+        if flag:
+            return
+
+    paths = []
+    for path in ["/data/bot_saved_data.json", "bot_saved_data.json"]:
+        if path not in paths and os.path.exists(path):
+            paths.append(path)
+
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Мигрируем товары только если в SQLite пока пусто.
+            if not all_products():
+                for idx, (name, price) in enumerate(data.get("products", {}).items(), start=1):
+                    with db() as con:
+                        con.execute(
+                            "INSERT OR REPLACE INTO products(name, price, group_name, sort_order, updated_at) VALUES(?,?,?,?,?)",
+                            (str(name), int(price), "main", idx, time.time()),
+                        )
+                        con.commit()
+
+                offset = len(data.get("products", {}))
+                for idx, (name, price) in enumerate(data.get("extra_products", {}).items(), start=1):
+                    with db() as con:
+                        con.execute(
+                            "INSERT OR REPLACE INTO products(name, price, group_name, sort_order, updated_at) VALUES(?,?,?,?,?)",
+                            (str(name), int(price), "extra", offset + idx, time.time()),
+                        )
+                        con.commit()
+
+            # Мигрируем кошельки, если в SQLite по типу пусто.
+            wallets = data.get("wallets", {})
+            for t in ["btc", "usdt", "ton"]:
+                existing = get_wallets(t)
+                if not existing:
+                    value = wallets.get(t, [])
+                    if isinstance(value, str):
+                        value = [value] if value.strip() else []
+                    for address in value:
+                        if str(address).strip():
+                            add_wallet(t, str(address).strip())
+
+            about = data.get("about_text")
+            if about:
+                set_about_text(str(about))
+        except Exception as e:
+            logging.warning("json migration failed %s: %s", path, e)
+
+    with db() as con:
+        con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('json_migrated','1')")
+        con.commit()
+
+migrate_json_to_sqlite_once()
+
 def get_districts(city: str, pid: str) -> list[str]:
     if city in TOP_CITIES:
         return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
@@ -457,7 +556,8 @@ async def debug_cmd(m: types.Message):
     await m.answer(
         f"DB: <code>{escape(DB_PATH)}</code>\n"
         f"Основные: <b>{mcnt}</b>\nДополнительные: <b>{ecnt}</b>\n"
-        f"BTC/USDT/TON кошельки: <b>{len(get_wallets('btc'))}/{len(get_wallets('usdt'))}/{len(get_wallets('ton'))}</b>"
+        f"BTC/USDT/TON кошельки: <b>{len(get_wallets('btc'))}/{len(get_wallets('usdt'))}/{len(get_wallets('ton'))}</b>\n"
+        f"Городов в списке: <b>{len(ALL_CITIES)}</b>"
     )
 
 @dp.message(Command("rates"))
@@ -518,7 +618,12 @@ async def cash_cmd(m: types.Message, state: FSMContext):
     args = command_args(m.text)
     parts = args.split(maxsplit=1)
     if not parts or parts[0].lower() == "info":
-        await m.answer(f"BTC:\n{wallets_text('btc')}\n\nUSDT:\n{wallets_text('usdt')}\n\nTON:\n{wallets_text('ton')}")
+        await m.answer(
+            f"💳 <b>Кошельки</b>\n\n"
+            f"BTC ({len(get_wallets('btc'))}):\n{wallets_text('btc')}\n\n"
+            f"USDT ({len(get_wallets('usdt'))}):\n{wallets_text('usdt')}\n\n"
+            f"TON ({len(get_wallets('ton'))}):\n{wallets_text('ton')}"
+        )
         return
     action = parts[0].lower()
     if action == "del":
