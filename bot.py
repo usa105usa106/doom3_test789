@@ -28,28 +28,20 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
+# Файл сохранения.
+# Для Railway лучше задать переменную DATA_SAVE_FILE=/data/bot_saved_data.json
+DATA_SAVE_FILE = os.getenv(
+    "DATA_SAVE_FILE",
+    "/data/bot_saved_data.json" if os.path.exists("/data") else "bot_saved_data.json"
+)
+
 # =====================
 # ADMIN CONFIG
 # =====================
-# Можно указать админов двумя способами:
-# 1) через переменную окружения ADMIN_IDS=123456789,987654321
-# 2) прямо в коде: HARD_ADMIN_IDS = [123456789]
-# Бот также понимает ADMIN_ID, admin_ids и даже amdin_ids, если переменная была названа с опечаткой.
 
 HARD_ADMIN_IDS: list[int] = []
 
 def _load_admin_ids() -> set[int]:
-    """
-    Надёжно читает ID админов из переменных окружения и из HARD_ADMIN_IDS.
-
-    Поддерживает варианты:
-    ADMIN_IDS=123456789
-    ADMIN_IDS=123456789,987654321
-    ADMIN_IDS=[123456789, 987654321]
-    ADMIN_ID=123456789
-    admin_ids=123456789
-    amdin_ids=123456789  # частая опечатка
-    """
     raw_values = [
         os.getenv("ADMIN_IDS", ""),
         os.getenv("ADMIN_ID", ""),
@@ -70,7 +62,6 @@ def _load_admin_ids() -> set[int]:
             pass
 
     for raw in raw_values:
-        # regex достаёт цифры даже из строк вида [123, 456] или "123"
         for part in re.findall(r"\d+", str(raw)):
             try:
                 ids.add(int(part))
@@ -102,10 +93,7 @@ def _load_auto_admin_ids() -> None:
 _load_auto_admin_ids()
 
 def is_admin(user_id: int | None) -> bool:
-    if user_id is None:
-        return False
-    # ADMIN_IDS загружается при старте контейнера, поэтому после изменения переменных нужен redeploy/restart.
-    return int(user_id) in ADMIN_IDS
+    return user_id is not None and int(user_id) in ADMIN_IDS
 
 async def admin_only(m: types.Message) -> bool:
     user_id = m.from_user.id if m.from_user else None
@@ -141,12 +129,9 @@ PRODUCTS = {
     "Кроссовки": 3500,
     "Худи": 2500,
     "Плед": 1800,
-    "Шарф": 900
+    "Шарф": 900,
 }
 
-# Дополнительные товары.
-# Для каждого города к 5 основным товарам добавляется случайный набор
-# от 3 до 6 товаров. Набор стабилен для одного и того же города.
 EXTRA_PRODUCTS = {
     "Рюкзак": 2200,
     "Кепка": 700,
@@ -161,40 +146,6 @@ EXTRA_PRODUCTS = {
     "Поло": 1500,
     "Брюки": 2400,
 }
-
-def city_products(city: str) -> dict:
-    """5 основных товаров + 3-6 дополнительных для выбранного города."""
-    result = dict(PRODUCTS)
-    if EXTRA_PRODUCTS:
-        rnd = random.Random(city)
-        count = min(rnd.randint(3, 6), len(EXTRA_PRODUCTS))
-        extra_names = rnd.sample(list(EXTRA_PRODUCTS.keys()), count)
-        for name in extra_names:
-            result[name] = EXTRA_PRODUCTS[name]
-    return result
-
-def city_keyboard():
-    # В меню показываются только 15 самых крупных городов.
-    # Остальные города вводятся вручную через кнопку «Другой город».
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=x, callback_data=f"c_{x}")] for x in ALL_CITIES[:15]
-    ])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="🔎 Другой город", callback_data="other_city")])
-    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
-    return kb
-
-def products_keyboard(city: str):
-    products = city_products(city)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{p} — {price} ₽", callback_data=f"p_{p}")]
-        for p, price in products.items()
-    ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="🔙 Города", callback_data="city"),
-        InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
-    ])
-    return kb
-
 
 ALL_CITIES = [
     "Москва","Санкт-Петербург","Новосибирск","Екатеринбург","Казань",
@@ -216,8 +167,10 @@ ALL_CITIES = [
     "Ангарск","Братск","Южно-Сахалинск","Каменск-Уральский","Орск",
     "Златоуст","Элиста","Петропавловск-Камчатский","Нижнекамск","Химки",
     "Королёв","Мытищи","Подольск","Люберцы","Серпухов",
-    "Одинцово","Красногорск","Балашиха","Раменское","Жуковский"
+    "Одинцово","Красногорск","Балашиха","Раменское","Жуковский",
 ]
+CITY_CODES = {city: str(i) for i, city in enumerate(ALL_CITIES)}
+CODE_CITIES = {str(i): city for i, city in enumerate(ALL_CITIES)}
 
 LOCATIONS = {
     "Москва": ["Тверской", "Арбат", "Хамовники", "Пресненский", "Басманный"],
@@ -269,28 +222,13 @@ LOCATIONS = {
     "Сочи": ["Центральный", "Адлерский", "Хостинский"],
     "Архангельск": ["Ломоносовский", "Октябрьский", "Соломбальский"],
     "Владимир": ["Ленинский", "Октябрьский", "Фрунзенский"],
-    "Симферополь": ["Центральный", "Киевский", "Железнодорожный"]
+    "Симферополь": ["Центральный", "Киевский", "Железнодорожный"],
 }
 
 TOP_CITIES = set(ALL_CITIES[:50])
 FALLBACK_DISTRICTS = ["Автовокзал", "ЖД/вокзал", "Любой район"]
 GENERIC_TOP_DISTRICTS = ["Центр", "Ленинский", "Советский", "Октябрьский", "Центральный"]
 
-def get_city_districts(city: str) -> list[str]:
-    """
-    Для первых 50 крупных городов — до 5 районов.
-    Для остальных городов — всегда Центр + случайно 1-3 варианта
-    из Автовокзал / ЖД/вокзал / Любой район. Набор стабилен для города.
-    """
-    if city in TOP_CITIES:
-        return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
-
-    rnd = random.Random(f"districts:{city}")
-    count = rnd.randint(1, 3)
-    random_districts = rnd.sample(FALLBACK_DISTRICTS, count)
-    return ["Центр"] + random_districts
-
-# WALLETS
 WALLETS = {
     "btc": ["bc1qexample"],
     "usdt": ["TXexample"],
@@ -302,48 +240,6 @@ WALLET_TITLES = {
     "ton": "TON",
 }
 
-
-def get_random_wallet(wallet_type: str) -> str:
-    wallets = WALLETS.get(wallet_type, [])
-    if not wallets:
-        return "не задан"
-    return random.choice(wallets)
-
-def wallets_text(wallet_type: str) -> str:
-    wallets = WALLETS.get(wallet_type, [])
-    if not wallets:
-        return "не задан"
-    return "\n".join(f"• <code>{escape(w)}</code>" for w in wallets)
-
-def wallets_info_text() -> str:
-    """Текущий список введённых кошельков."""
-    lines = ["💳 <b>Введённые кошельки</b>", ""]
-    for key in ("btc", "usdt", "ton"):
-        wallet = WALLETS.get(key) or "не задан"
-        lines.append(f"{WALLET_TITLES[key]}: <code>{escape(wallet)}</code>")
-    return "\n".join(lines)
-
-def products_info_text() -> str:
-    """Весь введённый товар с ценами."""
-    if not PRODUCTS and not EXTRA_PRODUCTS:
-        return "📦 <b>Товары</b>\n\nСписок товаров пуст."
-
-    lines = ["📦 <b>Введённый товар с ценами</b>", ""]
-    used: set[str] = set()
-
-    for name, price in sorted(PRODUCTS.items(), key=lambda x: x[0].lower()):
-        used.add(name.lower())
-        lines.append(f"• <b>{escape(name)}</b> — <code>{int(price)} ₽</code>")
-
-    for name, price in sorted(EXTRA_PRODUCTS.items(), key=lambda x: x[0].lower()):
-        if name.lower() in used:
-            continue
-        lines.append(f"• <b>{escape(name)}</b> — <code>{int(price)} ₽</code>")
-
-    return "\n".join(lines)
-
-# Резервные курсы на случай, если сервер не сможет получить актуальный курс из интернета.
-# Сумма в криптовалюте считается строго так: цена_в_рублях / курс_криптовалюты_в_рублях.
 BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
 USDT_TRC20_RATE = float(os.getenv("USDT_TRC20_RATE", "90"))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
@@ -351,12 +247,114 @@ _rates_cache = {"ts": 0, "rates": None}
 
 ABOUT_TEXT = "🛒 Это автоматический маркетплейс.\nОплата только в криптовалюте.\nКошельки действительны 30 минут."
 
+# =====================
+# HELPERS
+# =====================
+
+def normalize_wallets() -> None:
+    for key, value in list(WALLETS.items()):
+        if isinstance(value, str):
+            WALLETS[key] = [value] if value.strip() else []
+        else:
+            WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
+
+def save_bot_data() -> None:
+    normalize_wallets()
+    data = {
+        "products": PRODUCTS,
+        "extra_products": EXTRA_PRODUCTS,
+        "wallets": WALLETS,
+        "about_text": ABOUT_TEXT,
+    }
+    parent = os.path.dirname(DATA_SAVE_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(DATA_SAVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_bot_data() -> bool:
+    global ABOUT_TEXT
+    if not os.path.exists(DATA_SAVE_FILE):
+        return False
+
+    with open(DATA_SAVE_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    PRODUCTS.clear()
+    PRODUCTS.update({str(k): int(v) for k, v in data.get("products", {}).items()})
+
+    EXTRA_PRODUCTS.clear()
+    EXTRA_PRODUCTS.update({str(k): int(v) for k, v in data.get("extra_products", {}).items()})
+
+    saved_wallets = data.get("wallets", {})
+    for key in WALLETS:
+        value = saved_wallets.get(key, [])
+        if isinstance(value, str):
+            value = [value] if value.strip() else []
+        WALLETS[key] = [str(x).strip() for x in value if str(x).strip()]
+
+    ABOUT_TEXT = str(data.get("about_text", ABOUT_TEXT))
+    return True
+
+def city_products(city: str) -> dict:
+    result = dict(PRODUCTS)
+    if EXTRA_PRODUCTS:
+        rnd = random.Random(city)
+        count = min(rnd.randint(3, 6), len(EXTRA_PRODUCTS))
+        extra_names = rnd.sample(list(EXTRA_PRODUCTS.keys()), count)
+        for name in extra_names:
+            result[name] = EXTRA_PRODUCTS[name]
+    return result
+
+def get_city_districts(city: str) -> list[str]:
+    if city in TOP_CITIES:
+        return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
+    rnd = random.Random(f"districts:{city}")
+    count = rnd.randint(1, 3)
+    return ["Центр"] + rnd.sample(FALLBACK_DISTRICTS, count)
+
+def city_code(city: str) -> str:
+    return CITY_CODES.get(city, "x")
+
+def city_from_code(code: str, data: dict | None = None) -> str | None:
+    if code in CODE_CITIES:
+        return CODE_CITIES[code]
+    if data:
+        return data.get("city")
+    return None
+
+def get_random_wallet(wallet_type: str) -> str:
+    normalize_wallets()
+    wallets = WALLETS.get(wallet_type, [])
+    return random.choice(wallets) if wallets else "не задан"
+
+def wallets_text(wallet_type: str) -> str:
+    normalize_wallets()
+    wallets = WALLETS.get(wallet_type, [])
+    if not wallets:
+        return "не задан"
+    return "\n".join(f"• <code>{escape(w)}</code>" for w in wallets)
+
+def products_info_text() -> str:
+    lines = ["📦 <b>Весь товар с ценами</b>\n"]
+    if PRODUCTS:
+        lines.append("<b>Основные товары:</b>")
+        lines.extend(f"• {escape(name)} — <b>{price} ₽</b>" for name, price in PRODUCTS.items())
+    else:
+        lines.append("<b>Основные товары:</b>\nнет товаров")
+
+    lines.append("")
+    if EXTRA_PRODUCTS:
+        lines.append("<b>Дополнительные товары:</b>")
+        lines.extend(f"• {escape(name)} — <b>{price} ₽</b>" for name, price in EXTRA_PRODUCTS.items())
+    else:
+        lines.append("<b>Дополнительные товары:</b>\nнет товаров")
+    return "\n".join(lines)
+
 def fmt_amount(value: float, decimals: int) -> str:
-    """Формат без лишних нулей и без пробелов вокруг точки."""
     return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
 
 def get_live_rates() -> dict:
-    """Получает актуальные курсы BTC/USDT/TON к RUB. При ошибке использует резервные курсы."""
     now = time.time()
     if _rates_cache["rates"] and now - _rates_cache["ts"] < 300:
         return _rates_cache["rates"]
@@ -382,31 +380,75 @@ def get_live_rates() -> dict:
 
 def get_crypto_amounts(rub: int):
     rates = get_live_rates()
-    btc = fmt_amount(rub / rates["btc"], 8)
-    usdt = fmt_amount(rub / rates["usdt"], 2)
-    ton = fmt_amount(rub / rates["ton"], 3)
-    return btc, usdt, ton
+    return (
+        fmt_amount(rub / rates["btc"], 8),
+        fmt_amount(rub / rates["usdt"], 2),
+        fmt_amount(rub / rates["ton"], 3),
+    )
 
-# =====================
-# KEYBOARDS
-# =====================
+def command_args(text: str) -> str:
+    parts = (text or "").split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
 
 def main_kb():
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
         [KeyboardButton(text="🏙 Выбрать город")],
         [KeyboardButton(text="📦 Мой заказ")],
         [KeyboardButton(text="💰 Проверить оплату")],
-        [KeyboardButton(text="ℹ️ О боте")]
+        [KeyboardButton(text="ℹ️ О боте")],
     ])
 
+def city_keyboard():
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=x, callback_data=f"c:{CITY_CODES[x]}")]
+        for x in ALL_CITIES[:15]
+    ])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔎 Другой город", callback_data="other_city")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
+    return kb
+
+def products_keyboard(city: str):
+    products = city_products(city)
+    cc = city_code(city)
+    rows = []
+    for i, (p, price) in enumerate(products.items()):
+        rows.append([InlineKeyboardButton(text=f"{p} — {price} ₽", callback_data=f"p:{cc}:{i}")])
+    rows.append([
+        InlineKeyboardButton(text="🔙 Города", callback_data="city"),
+        InlineKeyboardButton(text="🏠 Меню", callback_data="menu"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def districts_keyboard(city: str, product_index: int):
+    districts = get_city_districts(city)
+    cc = city_code(city)
+    rows = [
+        [InlineKeyboardButton(text=d, callback_data=f"d:{cc}:{product_index}:{i}")]
+        for i, d in enumerate(districts)
+    ]
+    rows.append([
+        InlineKeyboardButton(text="🔙 Товары", callback_data="back_products"),
+        InlineKeyboardButton(text="🏠 Меню", callback_data="menu"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+async def safe_edit(message: types.Message, text: str, reply_markup=None):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except Exception:
+        await message.answer(text, reply_markup=reply_markup)
+
+try:
+    load_bot_data()
+except Exception as e:
+    logging.warning("Could not auto-load saved bot data: %s", e)
+
 # =====================
-# START
+# START / MENU
 # =====================
 
 @dp.message(F.text.regexp(r"^/start(@\w+)?$"))
-async def start(m: types.Message):
-    # Если админ не задан ни в переменных, ни в файле, первый пользователь /start становится админом.
-    # Это спасает от ошибок с ADMIN_IDS/amdin_ids.
+async def start(m: types.Message, state: FSMContext):
     if not ADMIN_IDS and m.from_user:
         ADMIN_IDS.add(int(m.from_user.id))
         _save_admin_ids()
@@ -415,18 +457,12 @@ async def start(m: types.Message):
             "✅ Админ не был задан, поэтому вы назначены администратором.\n"
             f"Ваш Telegram ID: <code>{m.from_user.id}</code>"
         )
+    await state.clear()
     await m.answer("🏪 Добро пожаловать в Маркетплейс", reply_markup=main_kb())
-
-# =====================
-# MAIN MENU BUTTONS
-# =====================
 
 @dp.message(F.text == "🏙 Выбрать город")
 async def choose_city_btn(m: types.Message, state: FSMContext):
-    data = await state.get_data()
-    # Не сбрасываем данные активной брони 30 минут: товар, город и районы сохраняются.
-    if time.time() - data.get("t", 0) > 1800:
-        await state.clear()
+    await state.set_state(S.city)
     await m.answer("🏙 Выберите город:", reply_markup=city_keyboard())
 
 @dp.message(F.text == "📦 Мой заказ")
@@ -441,10 +477,9 @@ async def check_payment_btn(m: types.Message):
 async def about(m: types.Message):
     await m.answer(ABOUT_TEXT)
 
-def command_args(text: str) -> str:
-    """Возвращает текст после команды, поддерживает /cmd и /cmd@BotName."""
-    parts = (text or "").split(maxsplit=1)
-    return parts[1].strip() if len(parts) > 1 else ""
+# =====================
+# ADMIN COMMANDS
+# =====================
 
 @dp.message(F.text.regexp(r"^/help(@\w+)?$"))
 async def help_cmd(m: types.Message):
@@ -455,30 +490,56 @@ async def help_cmd(m: types.Message):
         "/start — открыть главное меню\n"
         "/help — список команд администратора\n"
         "/add товар цена — добавить товар, пример: <code>/add книга 500</code>\n"
-        "/add info — показать весь введённый товар с ценами\n"
+        "/add info — показать весь товар с ценами\n"
         "/del товар — удалить товар, пример: <code>/del книга</code>\n"
         "/del all — удалить весь товар\n"
         "/info текст — изменить сообщение кнопки «О боте»\n"
-        "/cash info — список введённых кошельков\n"
-        "/cash btc — задать BTC кошелёк\n"
-        "/cash usdt — задать USDT-(TRC20) кошелёк\n"
-        "/cash ton — задать TON кошелёк\n"
-        "/cash del btc|usdt|ton — удалить выбранный кошелёк\n"
-        "/cash del all — удалить все кошельки"
+        "/cash info — показать все кошельки\n"
+        "/cash btc адрес — добавить BTC кошелёк\n"
+        "/cash usdt адрес — добавить USDT-(TRC20) кошелёк\n"
+        "/cash ton адрес — добавить TON кошелёк\n"
+        "/cash del btc|usdt|ton — удалить все кошельки выбранного типа\n"
+        "/cash del all — удалить все кошельки\n"
+        "/save — сохранить все текущие изменения\n"
+        "/load — загрузить последние сохранённые значения"
     )
+
+@dp.message(F.text.regexp(r"^/save(@\w+)?$"))
+async def save_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
+    try:
+        save_bot_data()
+        await m.answer(f"✅ Все изменения сохранены.\nФайл: <code>{escape(DATA_SAVE_FILE)}</code>")
+    except Exception as e:
+        logging.exception("Save failed")
+        await m.answer(f"❌ Не удалось сохранить данные: <code>{escape(str(e))}</code>")
+
+@dp.message(F.text.regexp(r"^/load(@\w+)?$"))
+async def load_cmd(m: types.Message):
+    if not await admin_only(m):
+        return
+    try:
+        if not load_bot_data():
+            await m.answer("❌ Сохранение не найдено. Сначала используйте /save.")
+            return
+        await m.answer("✅ Последние сохранённые значения загружены.")
+    except Exception as e:
+        logging.exception("Load failed")
+        await m.answer(f"❌ Не удалось загрузить данные: <code>{escape(str(e))}</code>")
 
 @dp.message(F.text.regexp(r"^/add(@\w+)?(\s|$)"))
 async def add_product_cmd(m: types.Message):
     if not await admin_only(m):
         return
-    rest = command_args(m.text)
 
+    rest = command_args(m.text)
     if rest.lower() == "info":
         await m.answer(products_info_text())
         return
 
     if not rest or len(rest.split()) < 2:
-        await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>\nПосмотреть товары: <code>/add info</code>")
+        await m.answer("❌ Неверный формат. Пример: <code>/add книга 500</code>\nСписок товаров: <code>/add info</code>")
         return
 
     name, price_text = rest.rsplit(maxsplit=1)
@@ -486,8 +547,9 @@ async def add_product_cmd(m: types.Message):
         await m.answer("❌ Цена должна быть положительным числом. Пример: <code>/add книга 500</code>")
         return
 
-    PRODUCTS[name.strip().capitalize()] = int(price_text)
-    await m.answer(f"✅ Товар добавлен: <b>{escape(name.strip().capitalize())}</b> — <b>{int(price_text)} ₽</b>")
+    product_name = name.strip().capitalize()
+    PRODUCTS[product_name] = int(price_text)
+    await m.answer(f"✅ Товар добавлен: <b>{escape(product_name)}</b> — <b>{int(price_text)} ₽</b>")
 
 @dp.message(F.text.regexp(r"^/del(@\w+)?\s+"))
 async def del_product_cmd(m: types.Message):
@@ -532,7 +594,6 @@ async def info_cmd(m: types.Message):
     ABOUT_TEXT = text
     await m.answer("✅ Сообщение кнопки «О боте» изменено.")
 
-
 @dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
 async def cash_cmd(m: types.Message, state: FSMContext):
     if not await admin_only(m):
@@ -540,24 +601,18 @@ async def cash_cmd(m: types.Message, state: FSMContext):
 
     args = command_args(m.text)
     parts = args.split(maxsplit=2)
-    if not parts:
+
+    if not parts or parts[0].lower() == "info":
         await m.answer(
-            wallets_info_text() +
-            "\n\nКоманды:\n"
-            "<code>/cash info</code> — список введённых кошельков\n"
-            "<code>/cash btc</code> — задать BTC кошелёк\n"
-            "<code>/cash usdt</code> — задать USDT-(TRC20) кошелёк\n"
-            "<code>/cash ton</code> — задать TON кошелёк\n"
-            "<code>/cash del btc</code> — удалить BTC кошелёк\n"
-            "<code>/cash del all</code> — удалить все кошельки"
+            "💳 <b>Кошельки</b>\n\n"
+            f"BTC:\n{wallets_text('btc')}\n\n"
+            f"USDT-(TRC20):\n{wallets_text('usdt')}\n\n"
+            f"TON:\n{wallets_text('ton')}\n\n"
+            "В оплате бот выбирает случайный кошелёк из сохранённых."
         )
         return
 
     action = parts[0].lower()
-
-    if action == "info":
-        await m.answer(wallets_info_text())
-        return
 
     if action == "del":
         if len(parts) < 2:
@@ -573,21 +628,22 @@ async def cash_cmd(m: types.Message, state: FSMContext):
             await m.answer("❌ Можно удалить только: btc, usdt, ton или all.")
             return
         WALLETS[target] = []
-        await m.answer(f"✅ Кошелёк {WALLET_TITLES[target]} удалён.")
+        await m.answer(f"✅ Все кошельки {WALLET_TITLES[target]} удалены.")
         return
 
     if action not in WALLETS:
-        await m.answer("❌ Неверная команда. Используйте: <code>/cash btc</code>, <code>/cash usdt</code>, <code>/cash ton</code>, <code>/cash del ...</code>")
+        await m.answer("❌ Неверная команда. Используйте: <code>/cash info</code>, <code>/cash btc адрес</code>, <code>/cash usdt адрес</code>, <code>/cash ton адрес</code>, <code>/cash del ...</code>")
         return
 
     if len(parts) >= 2:
-        wallet = parts[1].strip()
+        wallet = " ".join(parts[1:]).strip()
         if not wallet:
             await m.answer("❌ Кошелёк не может быть пустым.")
             return
+        normalize_wallets()
         WALLETS[action].append(wallet)
         await state.clear()
-        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} сохранён: <code>{escape(wallet)}</code>")
+        await m.answer(f"✅ Кошелёк {WALLET_TITLES[action]} добавлен: <code>{escape(wallet)}</code>")
         return
 
     await state.update_data(cash_type=action)
@@ -604,32 +660,221 @@ async def cash_wallet_from_chat(m: types.Message, state: FSMContext):
         await state.clear()
         await m.answer("❌ Тип кошелька не найден. Повторите команду /cash.")
         return
-    wallet = m.text.strip()
+    wallet = (m.text or "").strip()
     if not wallet:
         await m.answer("❌ Кошелёк не может быть пустым.")
         return
+    normalize_wallets()
     WALLETS[cash_type].append(wallet)
     await state.clear()
-    await m.answer(f"✅ Кошелёк {WALLET_TITLES[cash_type]} сохранён: <code>{escape(wallet)}</code>")
+    await m.answer(f"✅ Кошелёк {WALLET_TITLES[cash_type]} добавлен: <code>{escape(wallet)}</code>")
 
 # =====================
 # INLINE HANDLERS
 # =====================
 
 @dp.callback_query(F.data == "menu")
-async def menu(c: types.CallbackQuery):
-    await c.message.edit_text("🏪 Главное меню", reply_markup=None)
+async def menu(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    await state.clear()
+    await safe_edit(c.message, "🏪 Главное меню", reply_markup=None)
     await c.message.answer("Выберите действие:", reply_markup=main_kb())
 
 @dp.callback_query(F.data == "city")
 async def back_to_cities(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     await state.set_state(S.city)
-    await c.message.edit_text("🏙 Выберите город:", reply_markup=city_keyboard())
+    await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
 
 @dp.callback_query(F.data == "other_city")
 async def other_city(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     await state.set_state(S.city_name)
-    await c.message.edit_text("✍️ Напишите название города в чат.")
+    await safe_edit(c.message, "✍️ Напишите название города в чат.")
+
+@dp.message(S.city_name)
+async def city_name_from_chat(m: types.Message, state: FSMContext):
+    city = (m.text or "").strip()
+    if not city:
+        await m.answer("Напишите название города.")
+        return
+
+    matches = [x for x in ALL_CITIES if x.lower() == city.lower()]
+    city = matches[0] if matches else city[:64]
+
+    await state.update_data(city=city)
+    await state.set_state(S.product)
+    await m.answer(f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+
+@dp.callback_query(F.data.startswith("c:"))
+async def city_selected(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    code = c.data.split(":", 1)[1]
+    city = city_from_code(code)
+    if not city:
+        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+        return
+
+    await state.update_data(city=city)
+    await state.set_state(S.product)
+    await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+
+@dp.callback_query(F.data.startswith("p:"))
+async def product_selected(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    data = await state.get_data()
+
+    try:
+        _, cc, product_index_text = c.data.split(":", 2)
+        product_index = int(product_index_text)
+    except Exception:
+        await c.answer("Кнопка устарела. Выберите город заново.", show_alert=True)
+        await state.set_state(S.city)
+        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+        return
+
+    city = city_from_code(cc, data)
+    if not city:
+        await c.answer("Сначала выберите город", show_alert=True)
+        await state.set_state(S.city)
+        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+        return
+
+    products = city_products(city)
+    product_items = list(products.items())
+    if product_index < 0 or product_index >= len(product_items):
+        await c.answer("Товар устарел. Выберите товар заново.", show_alert=True)
+        await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+        return
+
+    product, price = product_items[product_index]
+    districts = get_city_districts(city)
+
+    await state.update_data(
+        city=city,
+        product=product,
+        product_index=product_index,
+        price=price,
+        districts=districts,
+    )
+    await state.set_state(S.district)
+
+    await safe_edit(
+        c.message,
+        f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b>\n\nВыберите район:",
+        reply_markup=districts_keyboard(city, product_index),
+    )
+
+@dp.callback_query(F.data == "back_products")
+async def back_products(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    data = await state.get_data()
+    city = data.get("city")
+    if not city:
+        await state.set_state(S.city)
+        await safe_edit(c.message, "🏙 Сначала выберите город:", reply_markup=city_keyboard())
+        return
+    await state.set_state(S.product)
+    await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+
+@dp.callback_query(F.data.startswith("d:"))
+async def district_selected(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    data = await state.get_data()
+
+    try:
+        _, cc, product_index_text, district_index_text = c.data.split(":", 3)
+        product_index = int(product_index_text)
+        district_index = int(district_index_text)
+    except Exception:
+        await c.answer("Кнопка устарела. Выберите город заново.", show_alert=True)
+        await state.set_state(S.city)
+        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+        return
+
+    city = city_from_code(cc, data)
+    if not city:
+        await c.answer("Сначала выберите город", show_alert=True)
+        await state.set_state(S.city)
+        await safe_edit(c.message, "🏙 Выберите город:", reply_markup=city_keyboard())
+        return
+
+    products = city_products(city)
+    product_items = list(products.items())
+    districts = get_city_districts(city)
+
+    if product_index < 0 or product_index >= len(product_items):
+        await c.answer("Товар устарел. Выберите товар заново.", show_alert=True)
+        await safe_edit(c.message, f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
+        return
+
+    if district_index < 0 or district_index >= len(districts):
+        await c.answer("Район устарел. Выберите район заново.", show_alert=True)
+        product, _ = product_items[product_index]
+        await safe_edit(
+            c.message,
+            f"📍 {escape(city)}\n🛍 Товар: <b>{escape(product)}</b>\n\nВыберите район:",
+            reply_markup=districts_keyboard(city, product_index),
+        )
+        return
+
+    product, price = product_items[product_index]
+    district = districts[district_index]
+    order_id = random.randint(1000000, 9999999)
+    await state.update_data(
+        city=city,
+        product=product,
+        product_index=product_index,
+        price=price,
+        district=district,
+        order_id=order_id,
+        t=time.time(),
+    )
+
+    btc, usdt, ton = get_crypto_amounts(price)
+
+    text = (
+        f"🆔 <b>Заказ №{order_id}</b>\n\n"
+        f"Товар: <b>{escape(product)}</b>\n"
+        f"Город: <b>{escape(city)}</b>\n"
+        f"Район: <b>{escape(district)}</b>\n\n"
+        f"Сумма: <b>{price} ₽</b>\n\n"
+        f"🔹 BTC: <code>{btc}</code> → {escape(get_random_wallet('btc'))}\n"
+        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(get_random_wallet('usdt'))}\n"
+        f"🔹 TON: <code>{ton}</code> → {escape(get_random_wallet('ton'))}\n\n"
+        "⏰ Внимание!!! Для покупки товара, оплатите точную сумму на любой из этих кошельков. "
+        "Бот находит оплату автоматически после первого подтверждения транзакции в сети. "
+        "В целях идентификации платежа - кошельки и сумма актуальны 30 минут. "
+        "Если у вас нет криптовалюты, её можно купить за рубли через обменник bestchange.biz, "
+        "для создания кошельков используйте trust wallet, скачать можно через google play/app store."
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data="check")],
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")],
+    ])
+
+    await safe_edit(c.message, text, reply_markup=kb)
+    asyncio.create_task(reminder(c.from_user.id, order_id))
+
+async def reminder(user_id: int, order_id: int):
+    await asyncio.sleep(20 * 60)
+    try:
+        await bot.send_message(user_id, f"⏳ Заказ №{order_id}\n\nВаша бронь действительна ещё 10 минут.")
+    except Exception:
+        pass
+
+@dp.callback_query(F.data == "check")
+async def check_payment(c: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if time.time() - data.get("t", 0) > 1800:
+        await c.answer("⛔ Время на оплату вышло (30 минут)", show_alert=True)
+        return
+    await c.answer("⛔ По данному заказу оплата не была получена, сначала оплатите и повторите запрос.", show_alert=True)
+
+# =====================
+# OTHER MESSAGES
+# =====================
 
 @dp.message(F.text.regexp(r"^\d+$"))
 async def order_number_from_chat(m: types.Message):
@@ -638,128 +883,6 @@ async def order_number_from_chat(m: types.Message):
         await m.answer("⛔ По данному заказу оплата не была получена, сначала оплатите и повторите запрос.")
     elif 1 <= len(digits) <= 6 or 8 <= len(digits) <= 20:
         await m.answer("❌ Неверный ввод, убедитесь, что вы вводите 7 цифр вашего заказа.")
-
-@dp.message(S.city_name)
-async def city_name_from_chat(m: types.Message, state: FSMContext):
-    city = m.text.strip()
-    if not city:
-        await m.answer("Напишите название города.")
-        return
-
-    # Если город есть в списке — берём написание из списка, иначе принимаем введённый город.
-    matches = [x for x in ALL_CITIES if x.lower() == city.lower()]
-    city = matches[0] if matches else city[:64]
-
-    await state.update_data(city=city)
-    await state.set_state(S.product)
-    await m.answer(f"📍 Город: <b>{escape(city)}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
-
-# 1. ГОРОД
-@dp.callback_query(F.data.startswith("c_"))
-async def city_selected(c: types.CallbackQuery, state: FSMContext):
-    city = c.data[2:]
-    await state.update_data(city=city)
-    await state.set_state(S.product)
-
-    await c.message.edit_text(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
-
-# 2. ТОВАР
-@dp.callback_query(F.data.startswith("p_"))
-async def product_selected(c: types.CallbackQuery, state: FSMContext):
-    product = c.data[2:]
-    data = await state.get_data()
-    city = data.get('city')
-    if not city:
-        await c.answer("Сначала выберите город", show_alert=True)
-        return
-
-    products = city_products(city)
-    if product not in products:
-        await c.answer("Товар недоступен для этого города", show_alert=True)
-        return
-
-    districts = get_city_districts(city)
-    # Запоминаем выбранный товар и список районов до окончания брони.
-    await state.update_data(product=product, price=products[product], districts=districts)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=d, callback_data=f"d_{d}")] for d in districts
-    ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="🔙 Товары", callback_data=f"back_products"),
-        InlineKeyboardButton(text="🏠 Меню", callback_data="menu")
-    ])
-
-    await c.message.edit_text(f"📍 {city}\n🛍 Товар: <b>{product}</b>\n\nВыберите район:", reply_markup=kb)
-
-@dp.callback_query(F.data == "back_products")
-async def back_products(c: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    city = data.get("city")
-    if not city:
-        await c.message.edit_text("🏙 Сначала выберите город:", reply_markup=city_keyboard())
-        return
-    await c.message.edit_text(f"📍 Город: <b>{city}</b>\n\n🛍 Выберите товар:", reply_markup=products_keyboard(city))
-
-# 3. РАЙОН → ОПЛАТА
-@dp.callback_query(F.data.startswith("d_"))
-async def district_selected(c: types.CallbackQuery, state: FSMContext):
-    district = c.data[2:]
-    data = await state.get_data()
-    
-    order_id = random.randint(1000000, 9999999)
-    await state.update_data(district=district, order_id=order_id, t=time.time())
-
-    price = data['price']
-    product = data['product']
-    city = data['city']
-    btc, usdt, ton = get_crypto_amounts(price)
-    # Берём актуальные кошельки из WALLETS в момент создания оплаты.
-    # Это гарантирует, что в оплате показывается последний введённый админом адрес,
-    # а не случайное/старое значение из состояния пользователя.
-    payment_wallets = {key: WALLETS.get(key) or "не задан" for key in ("btc", "usdt", "ton")}
-
-    text = (
-        f"🆔 <b>Заказ №{order_id}</b>\n\n"
-        f"Товар: <b>{product}</b>\n"
-        f"Город: <b>{city}</b>\n"
-        f"Район: <b>{district}</b>\n\n"
-        f"Сумма: <b>{price} ₽</b>\n\n"
-        f"🔹 BTC: <code>{btc}</code> → {escape(payment_wallets['btc'])}\n"
-        f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(payment_wallets['usdt'])}\n"
-        f"🔹 TON: <code>{ton}</code> → {escape(payment_wallets['ton'])}\n\n"
-        f"⏰ Внимание!!! Для покупки товара, оплатите точную сумму на любой из этих кошельков. Бот находит оплату автоматически после первого подтверждения транзакции в сети. В целях идентификации платежа - кошельки и сумма актуальны 30 минут. Если у вас нет криптовалюты, её можно купить за рубли через обменник bestchange.biz , для создания кошельков используйте trust wallet, скачать можно через google play/app store."
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data="check")],
-        [InlineKeyboardButton(text="🏠 Меню", callback_data="menu")]
-    ])
-
-    await c.message.edit_text(text, reply_markup=kb)
-
-    # Уведомление через 20 минут
-    asyncio.create_task(reminder(c.from_user.id, order_id))
-
-async def reminder(user_id: int, order_id: int):
-    await asyncio.sleep(20 * 60)  # 20 минут
-    try:
-        await bot.send_message(
-            user_id,
-            f"⏳ Заказ №{order_id}\n\nВаша бронь действительна ещё 10 минут."
-        )
-    except:
-        pass
-
-# Проверка оплаты
-@dp.callback_query(F.data == "check")
-async def check_payment(c: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if time.time() - data.get("t", 0) > 1800:  # 30 минут
-        await c.answer("⛔ Время на оплату вышло (30 минут)", show_alert=True)
-        return
-    await c.answer("⛔ По данному заказу оплата не была получена, сначала оплатите и повторите запрос.", show_alert=True)
-
 
 @dp.message(F.text.startswith("/"))
 async def unknown_or_forbidden_command(m: types.Message):
