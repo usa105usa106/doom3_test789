@@ -383,6 +383,16 @@ def set_about_text(text: str):
         con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('about_text', ?)", (text,))
         con.commit()
 
+def get_pay_text() -> str:
+    with db() as con:
+        row = con.execute("SELECT value FROM settings WHERE key='pay_text'").fetchone()
+    return row["value"] if row else "⏰ Кошельки и сумма актуальны 30 минут."
+
+def set_pay_text(text: str):
+    with db() as con:
+        con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('pay_text', ?)", (text,))
+        con.commit()
+
 def all_products():
     with db() as con:
         rows = con.execute("SELECT name, price, group_name, sort_order FROM products ORDER BY sort_order, rowid").fetchall()
@@ -779,9 +789,11 @@ async def adminid_cmd(m: types.Message):
 async def help_cmd(m: types.Message):
     if not await admin_only(m): return
     await m.answer(
-        "/add товар цена — добавить\n/add info — список\n/del all — удалить всё\n"
-        "/cash btc адрес — добавить BTC\n/cash usdt адрес — добавить USDT\n/cash ton адрес — добавить TON\n"
-        "/cash info — кошельки\n/rates — курсы\n/ping — проверка бота\n/debug — проверка"
+        "/add товар цена — добавить\n/add info — список\n/del название — удалить товар\n/del all — удалить всё\n"
+        "/cash btc адрес — добавить BTC\n/cash usdt адрес — добавить USDT\n/cash ton адрес — добавить TON\n/cash xmr адрес — добавить XMR\n"
+        "/cash info — кошельки\n/cash del btc|usdt|ton|xmr|all — удалить кошельки\n/pay on текст — изменить текст в оплате\n"
+        "/followers on текст — рассылка всем пользователям\n/info текст — изменить текст «О боте»\n"
+        "/adminid — показать Telegram ID админа\n/rates — курсы\n/ping — проверка бота\n/debug — проверка"
     )
 
 
@@ -881,6 +893,20 @@ async def del_cmd(m: types.Message, state: FSMContext):
     ok = delete_product(arg)
     await state.clear()
     await m.answer(f"✅ Удалено: <b>{escape(arg)}</b>" if ok else "❌ Такой товар не найден.")
+
+@dp.message(F.text.regexp(r"^/pay(@\w+)?(\s|$)"))
+async def pay_cmd(m: types.Message):
+    if not await admin_only(m): return
+    args = command_args(m.text)
+    if args.lower().startswith("on "):
+        text = args[3:].strip()
+        if not text:
+            await m.answer("❌ Формат: /pay on текст")
+            return
+        set_pay_text(text)
+        await m.answer("✅ Текст в оплате изменён.")
+        return
+    await m.answer("❌ Формат: /pay on текст")
 
 @dp.message(F.text.regexp(r"^/followers(@\w+)?(\s|$)"))
 async def followers_cmd(m: types.Message):
@@ -1155,7 +1181,7 @@ async def cb_dist_selfcontained(c: types.CallbackQuery, state: FSMContext):
         f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(random_wallet('usdt'))}\n"
         f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n"
         f"🔹 Monero (XMR): <code>{xmr}</code> → {escape(random_wallet('xmr'))}\n\n"
-        "⏰ Кошельки и сумма актуальны 30 минут.",
+        f"{escape(get_pay_text())}",
         reply_markup=payment_keyboard(),
     )
     asyncio.create_task(reminder(c.from_user.id, order_id))
@@ -1191,7 +1217,7 @@ async def cb_dist(c: types.CallbackQuery, state: FSMContext):
         f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(random_wallet('usdt'))}\n"
         f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n"
         f"🔹 Monero (XMR): <code>{xmr}</code> → {escape(random_wallet('xmr'))}\n\n"
-        "⏰ Кошельки и сумма актуальны 30 минут.",
+        f"{escape(get_pay_text())}",
         reply_markup=payment_keyboard(),
     )
     asyncio.create_task(reminder(c.from_user.id, order_id))
