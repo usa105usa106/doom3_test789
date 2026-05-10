@@ -1059,10 +1059,12 @@ async def cb_product_selfcontained(c: types.CallbackQuery, state: FSMContext):
         await c.answer("Кнопка устарела.", show_alert=True)
         return
 
-    # Если база видит товар — берём актуальную цену из базы. Если нет — используем данные из callback.
     fresh = resolve_item(city, item["pid"])
-    if fresh:
-        item = fresh
+    if not fresh:
+        await c.answer("Товар удалён или устарел.", show_alert=True)
+        await show_products(c.message, state, city)
+        return
+    item = fresh
 
     await state.update_data(city=city)
     await c.message.answer(
@@ -1128,8 +1130,11 @@ async def cb_dist_selfcontained(c: types.CallbackQuery, state: FSMContext):
         return
 
     fresh = resolve_item(city, item["pid"])
-    if fresh:
-        item = fresh
+    if not fresh:
+        await c.answer("Товар удалён или устарел.", show_alert=True)
+        await show_products(c.message, state, city)
+        return
+    item = fresh
 
     districts = get_districts(city, item["pid"])
     if idx < 0 or idx >= len(districts):
