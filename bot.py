@@ -51,16 +51,18 @@ dp = Dispatcher(storage=MemoryStorage())
 BTC_RATE = float(os.getenv("BTC_RATE", "9500000"))
 USDT_RATE = float(os.getenv("USDT_RATE", os.getenv("USDT_TRC20_RATE", "90")))
 TON_RATE = float(os.getenv("TON_RATE", "270"))
+XMR_RATE = float(os.getenv("XMR_RATE", "30000"))
 USE_LIVE_RATES = os.getenv("USE_LIVE_RATES", "1").strip() != "0"
 _rates_cache = {"ts": 0.0, "rates": None}
 INSTANCE_ID = str(uuid.uuid4())
 BOT_START_TIME = time.time()
 
-WALLETS = {"btc", "usdt", "ton"}
+WALLETS = {"btc", "usdt", "ton", "xmr"}
 WALLET_TITLES = {
     "btc": "BTC",
     "usdt": "USDT",
     "ton": "TON",
+    "xmr": "Monero (XMR)",
 }
 
 ALL_CITIES = [
@@ -630,23 +632,24 @@ def item_from_callback_parts(parts: list[str]):
 
 def get_rates() -> dict:
     if not USE_LIVE_RATES:
-        return {"btc": BTC_RATE, "usdt": USDT_RATE, "ton": TON_RATE}
+        return {"btc": BTC_RATE, "usdt": USDT_RATE, "ton": TON_RATE, "xmr": XMR_RATE}
     now = time.time()
     if _rates_cache["rates"] and now - _rates_cache["ts"] < 300:
         return _rates_cache["rates"]
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,tether,the-open-network&vs_currencies=rub"
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,tether,the-open-network,monero&vs_currencies=rub"
         with urllib.request.urlopen(url, timeout=8) as r:
             data = json.loads(r.read().decode("utf-8"))
         rates = {
             "btc": float(data["bitcoin"]["rub"]),
             "usdt": float(data["tether"]["rub"]),
             "ton": float(data["the-open-network"]["rub"]),
+            "xmr": float(data["monero"]["rub"]),
         }
         _rates_cache.update({"ts": now, "rates": rates})
         return rates
     except Exception:
-        return {"btc": BTC_RATE, "usdt": USDT_RATE, "ton": TON_RATE}
+        return {"btc": BTC_RATE, "usdt": USDT_RATE, "ton": TON_RATE, "xmr": XMR_RATE}
 
 def fmt_amount(v: float, decimals: int) -> str:
     return f"{v:.{decimals}f}".rstrip("0").rstrip(".")
@@ -657,6 +660,7 @@ def crypto_amounts(rub: int):
         fmt_amount(rub / rates["btc"], 8),
         fmt_amount(rub / rates["usdt"], 2),
         fmt_amount(rub / rates["ton"], 3),
+        fmt_amount(rub / rates["xmr"], 6),
         rates,
     )
 
@@ -697,7 +701,11 @@ def main_kb():
     ])
 
 def city_keyboard():
-    rows = [[InlineKeyboardButton(text=c, callback_data=f"city:{CITY_CODES[c]}")] for c in ALL_CITIES[:15]]
+    top = ALL_CITIES[:20]
+    rows = []
+    for i in range(0, len(top), 2):
+        pair = top[i:i+2]
+        rows.append([InlineKeyboardButton(text=c, callback_data=f"city:{CITY_CODES[c]}") for c in pair])
     rows.append([InlineKeyboardButton(text="🔎 Другой город", callback_data="other_city")])
     rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -814,7 +822,7 @@ async def debug_cmd(m: types.Message):
     await m.answer(
         f"DB: <code>{escape(DB_PATH)}</code>\n"
         f"Основные: <b>{mcnt}</b>\nДополнительные: <b>{ecnt}</b>\n"
-        f"BTC/USDT/TON кошельки: <b>{len(get_wallets('btc'))}/{len(get_wallets('usdt'))}/{len(get_wallets('ton'))}</b>\n"
+        f"BTC/USDT/TON/XMR кошельки: <b>{len(get_wallets('btc'))}/{len(get_wallets('usdt'))}/{len(get_wallets('ton'))}/{len(get_wallets('xmr'))}</b>\n"
         f"Городов в списке: <b>{len(ALL_CITIES)}</b>"
     )
 
@@ -822,7 +830,7 @@ async def debug_cmd(m: types.Message):
 async def rates_cmd(m: types.Message):
     if not await admin_only(m): return
     r = get_rates()
-    await m.answer(f"BTC: <b>{r['btc']}</b> RUB\nUSDT: <b>{r['usdt']}</b> RUB\nTON: <b>{r['ton']}</b> RUB\nLive: <b>{USE_LIVE_RATES}</b>")
+    await m.answer(f"BTC: <b>{r['btc']}</b> RUB\nUSDT: <b>{r['usdt']}</b> RUB\nTON: <b>{r['ton']}</b> RUB\nXMR: <b>{r['xmr']}</b> RUB\nLive: <b>{USE_LIVE_RATES}</b>")
 
 @dp.message(Command("save"))
 async def save_cmd(m: types.Message):
@@ -870,6 +878,28 @@ async def del_cmd(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer(f"✅ Удалено: <b>{escape(arg)}</b>" if ok else "❌ Такой товар не найден.")
 
+@dp.message(F.text.regexp(r"^/followers(@\w+)?(\s|$)"))
+async def followers_cmd(m: types.Message):
+    if not await admin_only(m): return
+    args = command_args(m.text)
+    if args.lower().startswith("on "):
+        text = args[3:].strip()
+        sent = 0
+        with db() as con:
+            rows = con.execute("SELECT user_id FROM users").fetchall()
+        for r in rows:
+            try:
+                await bot.send_message(r["user_id"], text)
+                sent += 1
+            except Exception:
+                pass
+        await m.answer(f"✅ Отправлено: {sent}")
+        return
+    if args.lower() == "off":
+        await m.answer("✅ Рассылка выключена.")
+        return
+    await m.answer("❌ Формат: /followers on текст")
+
 @dp.message(F.text.regexp(r"^/cash(@\w+)?(\s|$)"))
 async def cash_cmd(m: types.Message, state: FSMContext):
     try:
@@ -881,7 +911,7 @@ async def cash_cmd(m: types.Message, state: FSMContext):
                 f"💳 <b>Кошельки</b>\n\n"
                 f"BTC ({len(get_wallets('btc'))}):\n{wallets_text('btc')}\n\n"
                 f"USDT ({len(get_wallets('usdt'))}):\n{wallets_text('usdt')}\n\n"
-                f"TON ({len(get_wallets('ton'))}):\n{wallets_text('ton')}"
+                f"TON ({len(get_wallets('ton'))}):\n{wallets_text('ton')}\n\nXMR ({len(get_wallets('xmr'))}):\n{wallets_text('xmr')}"
             )
             return
         action = parts[0].lower()
@@ -892,12 +922,12 @@ async def cash_cmd(m: types.Message, state: FSMContext):
             elif target in WALLETS:
                 clear_wallets(target)
             else:
-                await m.answer("❌ /cash del btc|usdt|ton|all")
+                await m.answer("❌ /cash del btc|usdt|ton|xmr|all")
                 return
             await m.answer("✅ Кошельки удалены.")
             return
         if action not in WALLETS:
-            await m.answer("❌ Формат: /cash btc адрес, /cash usdt адрес, /cash ton адрес")
+            await m.answer("❌ Формат: /cash btc/usdt/ton/xmr адрес")
             return
         if len(parts) > 1 and parts[1].strip():
             address = parts[1].strip()
@@ -1104,7 +1134,7 @@ async def cb_dist_selfcontained(c: types.CallbackQuery, state: FSMContext):
 
     district = districts[idx]
     order_id = random.randint(1000000, 9999999)
-    btc, usdt, ton, rates = crypto_amounts(int(item["price"]))
+    btc, usdt, ton, xmr, rates = crypto_amounts(int(item["price"]))
     await state.update_data(order_id=order_id, t=time.time(), city=city, product=item["name"], price=item["price"], district=district)
     await c.message.answer(
         f"🆔 <b>Заказ №{order_id}</b>\n\n"
@@ -1114,7 +1144,8 @@ async def cb_dist_selfcontained(c: types.CallbackQuery, state: FSMContext):
         f"Сумма: <b>{item['price']} ₽</b>\n\n"
         f"🔹 BTC: <code>{btc}</code> → {escape(random_wallet('btc'))}\n"
         f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(random_wallet('usdt'))}\n"
-        f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n\n"
+        f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n"
+        f"🔹 Monero (XMR): <code>{xmr}</code> → {escape(random_wallet('xmr'))}\n\n"
         "⏰ Кошельки и сумма актуальны 30 минут.",
         reply_markup=payment_keyboard(),
     )
@@ -1139,7 +1170,7 @@ async def cb_dist(c: types.CallbackQuery, state: FSMContext):
         await c.answer("Район устарел.", show_alert=True); return
     district = districts[idx]
     order_id = random.randint(1000000, 9999999)
-    btc, usdt, ton, rates = crypto_amounts(int(item["price"]))
+    btc, usdt, ton, xmr, rates = crypto_amounts(int(item["price"]))
     await state.update_data(order_id=order_id, t=time.time(), city=city, product=item["name"], price=item["price"], district=district)
     await c.message.answer(
         f"🆔 <b>Заказ №{order_id}</b>\n\n"
@@ -1149,7 +1180,8 @@ async def cb_dist(c: types.CallbackQuery, state: FSMContext):
         f"Сумма: <b>{item['price']} ₽</b>\n\n"
         f"🔹 BTC: <code>{btc}</code> → {escape(random_wallet('btc'))}\n"
         f"🔹 USDT-(TRC20): <code>{usdt}</code> → {escape(random_wallet('usdt'))}\n"
-        f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n\n"
+        f"🔹 TON: <code>{ton}</code> → {escape(random_wallet('ton'))}\n"
+        f"🔹 Monero (XMR): <code>{xmr}</code> → {escape(random_wallet('xmr'))}\n\n"
         "⏰ Кошельки и сумма актуальны 30 минут.",
         reply_markup=payment_keyboard(),
     )
