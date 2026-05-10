@@ -1045,20 +1045,24 @@ async def city_name_input(m: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "menu")
 async def cb_menu(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     await state.clear()
     await c.message.answer("🏪 Главное меню", reply_markup=main_kb())
 
 @dp.callback_query(F.data.in_({"city_menu", "city"}))
 async def cb_city_menu(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     await show_city_menu(c.message, state)
 
 @dp.callback_query(F.data == "other_city")
 async def cb_other_city(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     await state.set_state(S.city_name)
     await c.message.answer("✍️ Напишите название города в чат.")
 
 @dp.callback_query(F.data.startswith("city:"))
 async def cb_city(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     code = c.data.split(":", 1)[1]
     city = CODE_CITIES.get(code)
     if not city:
@@ -1068,6 +1072,7 @@ async def cb_city(c: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("c:"))
 async def cb_city_old(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     code = c.data.split(":", 1)[1]
     city = CODE_CITIES.get(code)
     if not city:
@@ -1092,6 +1097,7 @@ async def cb_product_selfcontained(c: types.CallbackQuery, state: FSMContext):
         return
     item = fresh
 
+    await c.answer()
     await state.update_data(city=city)
     await c.message.answer(
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
@@ -1111,6 +1117,7 @@ async def cb_product(c: types.CallbackQuery, state: FSMContext):
     if not item:
         await c.answer("Товар устарел или удалён.", show_alert=True)
         await show_products(c.message, state, city); return
+    await c.answer()
     await state.update_data(city=city)
     await c.message.answer(
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
@@ -1130,6 +1137,7 @@ async def cb_product_old(c: types.CallbackQuery, state: FSMContext):
     if not item:
         await c.answer("Товар устарел или удалён.", show_alert=True)
         await show_products(c.message, state, city); return
+    await c.answer()
     await state.update_data(city=city)
     await c.message.answer(
         f"📍 {escape(city)}\n🛍 Товар: <b>{escape(item['name'])}</b> — <b>{item['price']} ₽</b>\n\nВыберите район:",
@@ -1138,6 +1146,7 @@ async def cb_product_old(c: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("back:"))
 async def cb_back_products(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
     cc = c.data.split(":", 1)[1]
     city = CODE_CITIES.get(cc) or (await state.get_data()).get("city")
     if city:
@@ -1168,6 +1177,7 @@ async def cb_dist_selfcontained(c: types.CallbackQuery, state: FSMContext):
         return
 
     district = districts[idx]
+    await c.answer()
     order_id = random.randint(1000000, 9999999)
     btc, usdt, ton, xmr, rates = crypto_amounts(int(item["price"]))
     await state.update_data(order_id=order_id, t=time.time(), city=city, product=item["name"], price=item["price"], district=district)
@@ -1204,6 +1214,7 @@ async def cb_dist(c: types.CallbackQuery, state: FSMContext):
     if idx < 0 or idx >= len(districts):
         await c.answer("Район устарел.", show_alert=True); return
     district = districts[idx]
+    await c.answer()
     order_id = random.randint(1000000, 9999999)
     btc, usdt, ton, xmr, rates = crypto_amounts(int(item["price"]))
     await state.update_data(order_id=order_id, t=time.time(), city=city, product=item["name"], price=item["price"], district=district)
