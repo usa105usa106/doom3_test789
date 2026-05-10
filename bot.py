@@ -609,9 +609,13 @@ migrate_json_to_sqlite_once()
 
 def get_districts(city: str, pid: str) -> list[str]:
     city_index = ALL_CITIES.index(city) if city in ALL_CITIES else 999
+    time_slot = int(time.time() // 1800)
     if city_index < 50:
-        return (LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)[:5]
-    rnd = random.Random(f"{city}:{pid}")
+        districts = list(LOCATIONS.get(city) or GENERIC_TOP_DISTRICTS)
+        rnd = random.Random(f"{city}:{pid}:{time_slot}")
+        count = rnd.randint(3, min(5, len(districts))) if len(districts) > 3 else len(districts)
+        return rnd.sample(districts, count)
+    rnd = random.Random(f"{city}:{pid}:{time_slot}")
     return rnd.sample(FALLBACK_DISTRICTS, rnd.randint(2, 4))
 
 def item_from_callback_parts(parts: list[str]):
